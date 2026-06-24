@@ -495,7 +495,7 @@ async function connectToWhatsApp() {
   currentQR = null;
 
   try {
-    const { state, saveCreds } = await useFirestoreAuthState('sessions_v2');
+    const { state, saveCreds } = await useFirestoreAuthState('sessions');
 
     // Create the socket connection
     sock = makeWASocket({
@@ -1770,6 +1770,27 @@ async function startServer() {
   connectToWhatsApp();
 
   // API Endpoints
+  app.post('/api/debug/wipe', async (req, res) => {
+    try {
+      const fixFileName = (file: string) => file?.replace(/\//g, '__')?.replace(/:/g, '-');
+      const getUrl = (file: string) => `https://firestore.googleapis.com/v1/projects/${process.env.VITE_FIREBASE_PROJECT_ID}/databases/(default)/documents/sessions/${fixFileName(file)}?key=${process.env.VITE_FIREBASE_API_KEY}`;
+      await fetch(getUrl('creds.json'), { method: 'DELETE' });
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  app.get('/api/debug', (req, res) => {
+    res.json({
+      projectId: process.env.VITE_FIREBASE_PROJECT_ID || 'missing',
+      apiKey: process.env.VITE_FIREBASE_API_KEY ? 'exists' : 'missing',
+      connectionStatus,
+      qrIsNull: currentQR === null,
+      sockExists: sock !== null
+    });
+  });
+
   app.get('/api/state', (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
@@ -2079,7 +2100,7 @@ async function startServer() {
     const db = getFirestoreDb();
     if (db) {
       try {
-        await deleteDoc(doc(db, 'sessions_v2', 'creds.json'));
+        await deleteDoc(doc(db, 'sessions', 'creds.json'));
       } catch (e) {}
     }
 
