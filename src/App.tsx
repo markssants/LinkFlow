@@ -128,7 +128,7 @@ export default function App() {
   const fetchState = async (showLoading = false) => {
     if (showLoading) setIsLoading(true);
     try {
-      const response = await fetch('/api/state');
+      const response = await fetch('/api/state?t=' + Date.now(), { cache: 'no-store' });
       if (response.ok) {
         const data: WhatsAppState = await response.json();
         setState(data);

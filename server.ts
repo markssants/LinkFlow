@@ -510,13 +510,16 @@ async function connectToWhatsApp() {
 
     // Track connection updates
     sock.ev.on('connection.update', async (update: any) => {
+      console.log('Connection update:', Object.keys(update));
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
+        console.log('Received QR in connection update');
         try {
           // Convert the raw QR text into a Base64 Client-readable Data URL
           currentQR = await QRCode.toDataURL(qr);
           connectionStatus = 'disconnected';
+          console.log('Successfully generated QR code URL');
         } catch (qrErr) {
           console.error('Failed to generate QR Code data URL:', qrErr);
         }
@@ -1768,6 +1771,9 @@ async function startServer() {
 
   // API Endpoints
   app.get('/api/state', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.json({
       status: connectionStatus,
       qr: currentQR,
