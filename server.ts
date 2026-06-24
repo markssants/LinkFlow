@@ -495,14 +495,14 @@ async function connectToWhatsApp() {
   currentQR = null;
 
   try {
-    const { state, saveCreds } = await useFirestoreAuthState('sessions');
+    const { state, saveCreds } = await useFirestoreAuthState('sessions_v2');
 
     // Create the socket connection
     sock = makeWASocket({
       auth: state,
       logger: logger,
       printQRInTerminal: false,
-      browser: ['LinkFlow', 'Chrome', '1.0.0'],
+      browser: ['Ubuntu', 'Chrome', '110.0.5481.104'],
     });
 
     // Save auth credentials whenever they update
@@ -2073,7 +2073,7 @@ async function startServer() {
     const db = getFirestoreDb();
     if (db) {
       try {
-        await deleteDoc(doc(db, 'sessions', 'creds.json'));
+        await deleteDoc(doc(db, 'sessions_v2', 'creds.json'));
       } catch (e) {}
     }
 
