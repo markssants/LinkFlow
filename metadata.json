@@ -1,0 +1,8 @@
+{
+  "name": "LinkFlow",
+  "description": "App que conecta ao WhatsApp Web por QR Code, lê mensagens de um grupo mestre e as reencaminha automaticamente para os grupos de destino configurados.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
