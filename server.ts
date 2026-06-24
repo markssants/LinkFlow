@@ -631,6 +631,13 @@ async function startServer() {
 
   // API Endpoints
   app.get('/api/state', (req, res) => {
+    // If the server was sleeping (e.g. Cloud Run scale to zero) and connection dropped,
+    // trigger a reconnection when the frontend polls for state.
+    if (connectionStatus === 'disconnected' && !currentQR) {
+      console.log('State requested but connection is dead. Triggering reconnect...');
+      connectToWhatsApp();
+    }
+
     res.json({
       status: connectionStatus,
       qr: currentQR,
