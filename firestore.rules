@@ -20,8 +20,5 @@ service cloud.firestore {
     match /sessions/{sessionId} {
       allow read, write: if true;
     }
-    match /sessions_v2/{sessionId} {
-      allow read, write: if true;
-    }
   }
 }

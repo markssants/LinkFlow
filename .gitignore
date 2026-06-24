@@ -7,6 +7,5 @@ coverage/
 .env*
 !.env.example
 firebase-applet-config.json
-firebase-blueprint.json
 whatsapp-config.json
 auth_info_baileys/

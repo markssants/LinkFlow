@@ -3,7 +3,6 @@ import {
   CheckCircle2, 
   XCircle, 
   QrCode, 
-  Lock,
   LogOut, 
   RefreshCw, 
   Settings, 
@@ -19,49 +18,28 @@ import {
   Database,
   Cloud,
   Moon,
-  Sun
+  Sun,
+  Lock,
+  FileText
 } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 import { AffiliateConfigurator } from './components/AffiliateConfigurator';
-import DealsViewer from './components/DealsViewer';
 import { ConnectionStatus, Group, ForwardLog, WhatsAppState, AffiliateConfig } from './types';
 import { auth, googleProvider } from './lib/firebase-client';
 import { signInWithPopup, onAuthStateChanged, signOut, User } from 'firebase/auth';
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [isAuthLoading, setIsAuthLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'affiliates' | 'deals'>('dashboard');
-  
-  const [isAppUnlocked, setIsAppUnlocked] = useState(() => {
-    try {
-      return localStorage.getItem('appUnlocked') === 'true';
-    } catch (e) {
-      return false;
-    }
+  const [isUnlocked, setIsUnlocked] = useState(() => {
+    return sessionStorage.getItem('app_unlocked') === 'true';
   });
   const [passwordInput, setPasswordInput] = useState('');
-  const [passwordError, setPasswordError] = useState(false);
-
-  const handleUnlockSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (passwordInput === 'Higor7') {
-      setIsAppUnlocked(true);
-      setPasswordError(false);
-      try {
-        localStorage.setItem('appUnlocked', 'true');
-      } catch (e) {}
-    } else {
-      setPasswordError(true);
-      setPasswordInput('');
-    }
-  };
-
+  const [passwordError, setPasswordError] = useState('');
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'affiliates'>('dashboard');
+  const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    try {
-      return (localStorage.getItem('theme') as 'light' | 'dark') || 'light';
-    } catch (e) {
-      return 'light';
-    }
+    return (localStorage.getItem('theme') as 'light' | 'dark') || 'light';
   });
 
   useEffect(() => {
@@ -70,9 +48,7 @@ export default function App() {
     } else {
       document.documentElement.classList.remove('dark');
     }
-    try {
-      localStorage.setItem('theme', theme);
-    } catch (e) {}
+    localStorage.setItem('theme', theme);
   }, [theme]);
   
   const toggleTheme = () => setTheme(t => t === 'light' ? 'dark' : 'light');
@@ -128,9 +104,16 @@ export default function App() {
   const fetchState = async (showLoading = false) => {
     if (showLoading) setIsLoading(true);
     try {
-      const response = await fetch('/api/state?t=' + Date.now(), { cache: 'no-store' });
+      const response = await fetch('/api/state');
+      const text = await response.text();
+      
+      // Ignore HTML responses (usually from dev server restarting or proxy)
+      if (text.startsWith('<!') || text.startsWith('<html')) {
+        return;
+      }
+      
       if (response.ok) {
-        const data: WhatsAppState = await response.json();
+        const data: WhatsAppState = JSON.parse(text);
         setState(data);
         
         // Sync select inputs
@@ -139,7 +122,7 @@ export default function App() {
         }
       }
     } catch (err: any) {
-      if (!err?.message?.includes('Failed to fetch')) {
+      if (!err.message?.includes('Failed to fetch') && !err.message?.includes('Unexpected token')) {
         console.error('Erro ao buscar estado da aplicação:', err);
       }
     } finally {
@@ -299,7 +282,8 @@ export default function App() {
   };
 
   // Trigger disconnect (Logout)
-  const handleDisconnect = async () => {
+  const executeDisconnect = async () => {
+    setShowDisconnectConfirm(false);
     setIsDisconnecting(true);
     try {
       const response = await fetch('/api/disconnect', { method: 'POST' });
@@ -322,11 +306,22 @@ export default function App() {
     g => !state.targetGroups.some(tg => tg.id === g.id) && g.name.toLowerCase().includes(groupSearch.toLowerCase())
   );
 
+  const handleUnlock = (e: any) => {
+    e.preventDefault();
+    if (passwordInput === 'Higor7') {
+      setIsUnlocked(true);
+      sessionStorage.setItem('app_unlocked', 'true');
+      setPasswordError('');
+    } else {
+      setPasswordError('Senha incorreta. Tente novamente.');
+    }
+  };
+
   if (isAuthLoading) {
     return <div className="flex h-screen items-center justify-center bg-slate-50 dark:bg-slate-900 dark:text-slate-200 font-sans transition-colors">Carregando...</div>;
   }
 
-  if (!isAppUnlocked) {
+  if (!isUnlocked) {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-50 dark:bg-slate-900 font-sans transition-colors">
         <div className="bg-white dark:bg-slate-800 p-10 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-700 text-center max-w-sm w-full mx-4 transition-colors">
@@ -335,27 +330,27 @@ export default function App() {
           </div>
           <h1 className="text-2xl font-extrabold text-slate-950 dark:text-slate-100 mb-2">Acesso Restrito</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400 mb-8 leading-relaxed">
-            Por favor, insira a senha para desbloquear o LinkFlow.
+            Digite a senha para acessar o aplicativo.
           </p>
-          <form onSubmit={handleUnlockSubmit} className="space-y-4">
+          <form onSubmit={handleUnlock} className="space-y-4">
             <div>
-              <input 
-                type="password" 
+              <input
+                type="password"
                 value={passwordInput}
                 onChange={(e) => setPasswordInput(e.target.value)}
                 placeholder="Senha de acesso"
-                className={`w-full px-4 py-3 rounded-xl border ${passwordError ? 'border-red-500 focus:ring-red-500' : 'border-slate-200 dark:border-slate-700 focus:ring-emerald-500'} dark:bg-slate-900 dark:text-white focus:outline-none focus:ring-2 transition-all`}
+                className="w-full px-4 py-3 border border-slate-200 dark:border-slate-600 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all font-medium placeholder-slate-400"
                 autoFocus
               />
-              {passwordError && (
-                <p className="text-red-500 text-xs mt-2 text-left">Senha incorreta. Tente novamente.</p>
-              )}
             </div>
+            {passwordError && (
+              <p className="text-xs text-red-500 font-medium text-left">{passwordError}</p>
+            )}
             <button 
               type="submit"
-              className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 px-6 rounded-xl transition-all cursor-pointer flex items-center justify-center space-x-2"
+              className="w-full bg-slate-900 hover:bg-slate-800 dark:bg-emerald-600 dark:hover:bg-emerald-500 text-white font-bold py-3 px-6 rounded-xl transition-all cursor-pointer flex items-center justify-center space-x-2"
             >
-              <span>Desbloquear App</span>
+              <span>Desbloquear</span>
             </button>
           </form>
         </div>
@@ -427,9 +422,9 @@ export default function App() {
                 </span>
                 <button
                   id="btn-disconnect"
-                  onClick={handleDisconnect}
+                  onClick={() => setShowDisconnectConfirm(true)}
                   disabled={isDisconnecting}
-                  className="inline-flex items-center px-3 py-1.5 border border-slate-200 hover:border-red-200 bg-white hover:bg-red-50 text-slate-600 hover:text-red-600 rounded-lg text-xs font-medium cursor-pointer transition-colors duration-200 disabled:opacity-50"
+                  className="inline-flex items-center px-3 py-1.5 border border-slate-200 dark:border-slate-700 hover:border-red-200 dark:hover:border-red-900/50 bg-white dark:bg-slate-800 hover:bg-red-50 dark:hover:bg-red-900/20 text-slate-600 dark:text-slate-300 hover:text-red-600 dark:hover:text-red-400 rounded-lg text-xs font-medium cursor-pointer transition-colors duration-200 disabled:opacity-50"
                   title="Desconectar Sessão"
                 >
                   <LogOut className={`w-3.5 h-3.5 mr-1 ${isDisconnecting ? 'animate-spin' : ''}`} />
@@ -535,10 +530,10 @@ export default function App() {
             <>
               {/* Navigation Tabs */}
               <div className="lg:col-span-12 mb-2">
-                <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-2xl w-full max-w-md ml-0 shadow-inner">
+                <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-2xl w-full max-w-sm ml-0 shadow-inner">
                   <button
                     onClick={() => setActiveTab('dashboard')}
-                    className={`flex-1 py-2 text-xs font-semibold rounded-xl transition-all ${
+                    className={`flex-1 py-2 text-sm font-semibold rounded-xl transition-all ${
                       activeTab === 'dashboard'
                         ? 'bg-white dark:bg-slate-700 shadow flex items-center justify-center text-slate-800 dark:text-slate-100'
                         : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
@@ -548,23 +543,13 @@ export default function App() {
                   </button>
                   <button
                     onClick={() => setActiveTab('affiliates')}
-                    className={`flex-1 py-2 text-xs font-semibold rounded-xl transition-all ${
+                    className={`flex-1 py-2 px-4 text-sm font-semibold rounded-xl transition-all ${
                       activeTab === 'affiliates'
                         ? 'bg-white dark:bg-slate-700 shadow flex items-center justify-center text-slate-800 dark:text-slate-100'
                         : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
                     }`}
                   >
                     Afiliados
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('deals')}
-                    className={`flex-1 py-2 text-xs font-semibold rounded-xl transition-all ${
-                      activeTab === 'deals'
-                        ? 'bg-white dark:bg-slate-700 shadow flex items-center justify-center text-slate-800 dark:text-slate-100'
-                        : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
-                    }`}
-                  >
-                    🔥 Super Ofertas
                   </button>
                 </div>
               </div>
@@ -928,17 +913,9 @@ export default function App() {
 
               </div>
               </>
-              ) : activeTab === 'affiliates' ? (
+              ) : (
                 <div className="lg:col-span-12 space-y-8">
                   <AffiliateConfigurator initialConfig={state.affiliateConfig} onSave={handleSaveAffiliateConfig} />
-                </div>
-              ) : (
-                <div className="lg:col-span-12">
-                  <DealsViewer 
-                    affiliateConfig={state.affiliateConfig}
-                    targetGroups={state.targetGroups}
-                    isWhatsAppConnected={state.status === 'connected'}
-                  />
                 </div>
               )}
             </>
@@ -946,31 +923,54 @@ export default function App() {
 
         </div>
 
+        {/* Disconnect Confirmation Modal */}
+        <AnimatePresence>
+          {showDisconnectConfirm && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4"
+            >
+              <motion.div
+                initial={{ scale: 0.95, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.95, opacity: 0 }}
+                className="bg-white dark:bg-slate-800 rounded-2xl shadow-xl w-full max-w-sm overflow-hidden"
+              >
+                <div className="p-6">
+                  <div className="flex items-center justify-center w-12 h-12 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 mb-4 mx-auto">
+                    <AlertCircle className="w-6 h-6" />
+                  </div>
+                  <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 text-center mb-2">
+                    Sair do WhatsApp?
+                  </h3>
+                  <p className="text-sm text-slate-500 dark:text-slate-400 text-center">
+                    Isso revogará a sua sessão atual e você precisará ler o QR Code novamente para se conectar.
+                  </p>
+                </div>
+                <div className="bg-slate-50 dark:bg-slate-800/50 px-6 py-4 flex space-x-3 justify-end border-t border-slate-100 dark:border-slate-700/50">
+                  <button
+                    onClick={() => setShowDisconnectConfirm(false)}
+                    className="px-4 py-2 text-sm font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl transition-colors cursor-pointer flex-1"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={executeDisconnect}
+                    className="px-4 py-2 text-sm font-bold text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors cursor-pointer flex-1"
+                  >
+                    Sim, Sair
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
       </main>
     </div>
   );
 }
 
-// Simple layout icons fallback if not standard import
-function FileText(props: any) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width={props.size || "16"}
-      height={props.size || "16"}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      {...props}
-    >
-      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
-      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
-      <path d="M10 9H8" />
-      <path d="M16 13H8" />
-      <path d="M16 17H8" />
-    </svg>
-  );
-}
+
