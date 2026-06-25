@@ -1,79 +1,30 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-import express, { Request, Response, NextFunction } from 'express';
+import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
-import * as QRCodeNamespace from 'qrcode';
-const QRCode = (QRCodeNamespace as any).default || QRCodeNamespace;
+import QRCode from 'qrcode';
 import pino from 'pino';
-import { initializeApp as initializeAdminApp, getApps as getAdminApps, getApp as getAdminApp } from 'firebase-admin/app';
-import { getAuth as getAdminAuth } from 'firebase-admin/auth';
-import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
+import { initializeApp } from 'firebase/app';
+import { getFirestore, doc, getDoc, setDoc, deleteDoc, setLogLevel, collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
 
-// Initialize Firebase Admin for token verification
-try {
-  if (getAdminApps().length === 0) {
-    const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID;
-    if (projectId) {
-      initializeAdminApp({
-        projectId: projectId
-      });
-      console.log(`Firebase Admin initialized successfully for project: ${projectId}`);
-    } else {
-      initializeAdminApp();
-      console.log('Firebase Admin initialized with default credentials');
-    }
-  }
-} catch (err) {
-  console.error('Critical error: Failed to initialize Firebase Admin at startup:', err);
-}
-
-// Initialize Firebase Admin Firestore securely
-let firestoreDb: any = null;
-
-function getFirestoreDb() {
-  if (firestoreDb) return firestoreDb;
-  try {
-    const adminApp = getAdminApps().length > 0 ? getAdminApp() : null;
-    if (!adminApp) {
-      console.warn('getFirestoreDb: No Firebase Admin App initialized');
-      return null;
-    }
-    
-    const dbId = process.env.FIREBASE_DATABASE_ID || process.env.VITE_FIREBASE_DATABASE_ID || '(default)';
-    firestoreDb = getAdminFirestore(adminApp, dbId === '(default)' ? undefined : dbId);
-    console.log('Firebase Admin Firestore initialized successfully');
-  } catch (error) {
-    console.error('Failed to initialize Firebase Admin Firestore in server.ts:', error);
-  }
-  return firestoreDb;
-}
+setLogLevel('silent');
 
 // Safely import Baileys to handle potential export style differences
-import BaileysDefault, { useMultiFileAuthState as useMultiFileAuthStateNamed, DisconnectReason as DisconnectReasonNamed } from '@whiskeysockets/baileys';
-const makeWASocket = (BaileysDefault as any).default || BaileysDefault;
-const useMultiFileAuthState = useMultiFileAuthStateNamed;
-const DisconnectReason = DisconnectReasonNamed;
+import * as Baileys from '@whiskeysockets/baileys';
+const makeWASocket = (Baileys as any).default || Baileys;
+const useMultiFileAuthState = Baileys.useMultiFileAuthState;
+const DisconnectReason = Baileys.DisconnectReason;
 
-async function useFirestoreAuthState(uid: string) {
-  try {
-    const authPath = path.join(process.cwd(), `auth_info_baileys_${uid}`);
-    console.log(`WhatsApp Auth [${uid}]: Initializing local state at ${authPath}`);
-    if (!fs.existsSync(authPath)) {
-      fs.mkdirSync(authPath, { recursive: true });
-      console.log(`WhatsApp Auth [${uid}]: Created auth directory`);
-    }
-    return await useMultiFileAuthState(authPath);
-  } catch (err) {
-    console.error(`WhatsApp Auth [${uid}]: Failed to initialize multi-file auth state:`, err);
-    throw err;
-  }
+async function useFirestoreAuthState(collectionName: string) {
+  console.log('Using local multi-file auth state due to Firestore free tier quota constraints.');
+  return await useMultiFileAuthState('auth_info_baileys');
 }
 
-// Initialize logger
-const logger = pino({ level: 'warn' });
+// Initialize silent logger to keep console output clean
+const logger = pino({ level: 'silent' });
 
 interface Group {
   id: string;
@@ -97,79 +48,84 @@ interface ForwardLog {
   targets: LogTarget[];
 }
 
-interface UserConfig {
-  masterGroup: Group | null;
-  targetGroups: Group[];
-  includeSenderPrefix: boolean;
-  forwardDelayMs: number;
-  cloudPersistenceEnabled: boolean;
+// Configuration file path for persistent settings
+const CONFIG_FILE = path.join(process.cwd(), 'whatsapp-config.json');
+
+// Initialize Firebase App and Firestore securely from config file
+let firebaseApp: any = null;
+let firestoreDb: any = null;
+let currentDbId: string = '';
+
+function getFirestoreDb() {
+  if (firestoreDb) return firestoreDb;
+  try {
+    let firebaseConfig: any = null;
+
+    if (process.env.FIREBASE_API_KEY && process.env.FIREBASE_PROJECT_ID) {
+      console.log('Firebase: Initializing using Environment Variables (Detected)');
+      firebaseConfig = {
+        apiKey: process.env.FIREBASE_API_KEY,
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || '(default)'
+      };
+    } else {
+      const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
+      if (fs.existsSync(firebaseConfigPath)) {
+        console.log('Firebase: Initializing using local config file');
+        firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf-8'));
+      } else {
+        console.warn('Firebase: No config found! Set FIREBASE_API_KEY and FIREBASE_PROJECT_ID env vars or provide firebase-applet-config.json');
+      }
+    }
+
+    if (firebaseConfig) {
+      firebaseApp = initializeApp(firebaseConfig);
+      currentDbId = firebaseConfig.firestoreDatabaseId || '(default)';
+      firestoreDb = getFirestore(firebaseApp, currentDbId);
+      console.log('Firebase initialized successfully for database:', currentDbId);
+    }
+  } catch (error) {
+    console.error('Failed to initialize Firebase in server.ts:', error);
+  }
+  return firestoreDb;
+}
+
+// Memory state matching types.ts
+let connectionStatus: 'disconnected' | 'connecting' | 'connected' = 'disconnected';
+let currentQR: string | null = null;
+let userInfo: { jid: string; name?: string } | null = null;
+let availableGroups: Group[] = [];
+
+// Load config from file or defaults
+let config = {
+  masterGroup: null as Group | null,
+  targetGroups: [] as Group[],
+  includeSenderPrefix: false,
+  forwardDelayMs: 5000,
+  cloudPersistenceEnabled: true,
   affiliateConfig: {
-    mercadoLivre: string;
-    shopee: string;
-    amazon: string;
-    magazineLuiza: string;
-    aliexpress: string;
+    mercadoLivre: '',
+    shopee: '',
+    amazon: '',
+    magazineLuiza: '',
+    aliexpress: '',
     manualLinks: {
-      mercadoLivre: string;
-      shopee: string;
-      amazon: string;
-      magazineLuiza: string;
-      aliexpress: string;
-    };
-    useManualLinks: {
-      mercadoLivre: boolean;
-      shopee: boolean;
-      amazon: boolean;
-      magazineLuiza: boolean;
-      aliexpress: boolean;
-    };
-  };
-  logs: ForwardLog[];
-}
-
-interface UserContext {
-  uid: string;
-  sock: any;
-  connectionStatus: 'disconnected' | 'connecting' | 'connected';
-  currentQR: string | null;
-  userInfo: { jid: string; name?: string } | null;
-  availableGroups: Group[];
-  config: UserConfig;
-}
-
-const userSessions = new Map<string, UserContext>();
-
-function getDefaultConfig(): UserConfig {
-  return {
-    masterGroup: null,
-    targetGroups: [],
-    includeSenderPrefix: false,
-    forwardDelayMs: 5000,
-    cloudPersistenceEnabled: true,
-    affiliateConfig: {
       mercadoLivre: '',
       shopee: '',
       amazon: '',
       magazineLuiza: '',
-      aliexpress: '',
-      manualLinks: {
-        mercadoLivre: '',
-        shopee: '',
-        amazon: '',
-        magazineLuiza: '',
-        aliexpress: ''
-      },
-      useManualLinks: {
-        mercadoLivre: false,
-        shopee: false,
-        amazon: false,
-        magazineLuiza: false,
-        aliexpress: false
-      }
+      aliexpress: ''
     },
-    logs: [],
-  };
-}
+    useManualLinks: {
+      mercadoLivre: false,
+      shopee: false,
+      amazon: false,
+      magazineLuiza: false,
+      aliexpress: false
+    }
+  },
+  logs: [] as ForwardLog[],
+};
 
 // Helper to recursively strip any undefined fields from Firestore data
 function stripUndefined(obj: any): any {
@@ -192,36 +148,33 @@ function stripUndefined(obj: any): any {
 }
 
 // Firestore Sync Helper Function
-async function syncWithFirestore(uid: string, isInitialLoad: boolean) {
+async function syncWithFirestore(isInitialLoad: boolean) {
   const db = getFirestoreDb();
-  const context = userSessions.get(uid);
-  if (!context || !context.config.cloudPersistenceEnabled || !db) return;
+  if (!config.cloudPersistenceEnabled || !db) return;
 
   const performSync = async (databaseInstance: any) => {
-    const docRef = databaseInstance.doc(`users/${uid}/configs/main`);
+    const docRef = doc(databaseInstance, 'configs', 'main');
     if (isInitialLoad) {
-      const docSnap = await docRef.get();
-      if (docSnap.exists) {
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
         const cloudData = docSnap.data();
-        context.config.masterGroup = cloudData.masterGroup || null;
-        context.config.targetGroups = cloudData.targetGroups || [];
-        context.config.includeSenderPrefix = cloudData.includeSenderPrefix !== undefined ? cloudData.includeSenderPrefix : false;
-        context.config.forwardDelayMs = cloudData.forwardDelayMs !== undefined ? Math.max(5000, Number(cloudData.forwardDelayMs)) : 5000;
+        config.masterGroup = cloudData.masterGroup || null;
+        config.targetGroups = cloudData.targetGroups || [];
+        config.includeSenderPrefix = cloudData.includeSenderPrefix !== undefined ? cloudData.includeSenderPrefix : false;
+        config.forwardDelayMs = cloudData.forwardDelayMs !== undefined ? Math.max(5000, Number(cloudData.forwardDelayMs)) : 5000;
         if (cloudData.affiliateConfig) {
-          context.config.affiliateConfig = { ...context.config.affiliateConfig, ...cloudData.affiliateConfig };
+          config.affiliateConfig = { ...config.affiliateConfig, ...cloudData.affiliateConfig };
         }
         // Load logs from dedicated Firestore collection if possible
         try {
-          const logsSnap = await databaseInstance.collection(`users/${uid}/logs`)
-            .orderBy('timestamp', 'desc')
-            .limit(100)
-            .get();
-            
+          const logsCol = collection(databaseInstance, 'logs');
+          const q = query(logsCol, orderBy('timestamp', 'desc'), limit(100));
+          const logsSnap = await getDocs(q);
           const cloudLogs: ForwardLog[] = [];
-          logsSnap.forEach((doc: any) => {
-            const data = doc.data();
+          logsSnap.forEach((docSnap) => {
+            const data = docSnap.data();
             cloudLogs.push({
-              id: doc.id,
+              id: docSnap.id,
               timestamp: data.timestamp || '',
               senderName: data.senderName || '',
               masterGroupName: data.masterGroupName,
@@ -231,96 +184,107 @@ async function syncWithFirestore(uid: string, isInitialLoad: boolean) {
             });
           });
           if (cloudLogs.length > 0) {
-            context.config.logs = cloudLogs;
-            console.log(`Synced ${cloudLogs.length} logs FROM dedicated Firestore collection for ${uid}.`);
+            config.logs = cloudLogs;
+            console.log(`Synced ${cloudLogs.length} logs FROM dedicated Firestore collection.`);
           } else {
-            context.config.logs = cloudData.logs || [];
+            config.logs = cloudData.logs || [];
           }
         } catch (logErr) {
-          console.error(`Error fetching logs from Firestore subcollection for ${uid}:`, logErr);
-          context.config.logs = cloudData.logs || [];
+          console.error('Error fetching logs from Firestore subcollection on startup:', logErr);
+          config.logs = cloudData.logs || [];
         }
-        console.log(`Successfully synced settings FROM Cloud Database for ${uid}.`);
+        console.log('Successfully synced settings FROM LinkFlow Cloud Database.');
       } else {
         // Doc doesn't exist, create it in cloud
-        await docRef.set(stripUndefined({
-          masterGroup: context.config.masterGroup,
-          targetGroups: context.config.targetGroups,
-          includeSenderPrefix: context.config.includeSenderPrefix,
-          forwardDelayMs: context.config.forwardDelayMs,
+        await setDoc(docRef, stripUndefined({
+          masterGroup: config.masterGroup,
+          targetGroups: config.targetGroups,
+          includeSenderPrefix: config.includeSenderPrefix,
+          forwardDelayMs: config.forwardDelayMs,
           cloudPersistenceEnabled: true,
-          affiliateConfig: context.config.affiliateConfig,
-          logs: context.config.logs
+          affiliateConfig: config.affiliateConfig,
+          logs: config.logs
         }));
-        console.log(`Created initial document in Cloud Database for ${uid}.`);
+        console.log('Created initial document in LinkFlow Cloud Database.');
       }
     } else {
       // Manual/automatic save TO cloud
-      await docRef.set(stripUndefined({
-        masterGroup: context.config.masterGroup,
-        targetGroups: context.config.targetGroups,
-        includeSenderPrefix: context.config.includeSenderPrefix,
-        forwardDelayMs: context.config.forwardDelayMs,
+      await setDoc(docRef, stripUndefined({
+        masterGroup: config.masterGroup,
+        targetGroups: config.targetGroups,
+        includeSenderPrefix: config.includeSenderPrefix,
+        forwardDelayMs: config.forwardDelayMs,
         cloudPersistenceEnabled: true,
-        affiliateConfig: context.config.affiliateConfig,
-        logs: context.config.logs
+        affiliateConfig: config.affiliateConfig,
+        logs: config.logs
       }));
-      console.log(`Successfully updated settings TO Cloud Database for ${uid}.`);
+      console.log('Successfully updated settings TO LinkFlow Cloud Database.');
     }
   };
 
   try {
     await performSync(db);
   } catch (error: any) {
-    console.error(`Error syncing with Firestore for ${uid}:`, error);
+    console.error('Error syncing with LinkFlow Firestore:', error);
     
+    // Check if the error is due to database not found or NOT_FOUND status code (gRPC Code 5 / not-found)
     const errStr = String(error);
+    
     if (errStr.includes('resource-exhausted') || errStr.includes('Quota limit exceeded')) {
-      console.warn(`Firestore quota exceeded for ${uid}. Disabling cloud persistence.`);
-      context.config.cloudPersistenceEnabled = false;
+      console.warn('Firestore quota exceeded. Disabling cloud persistence.');
+      config.cloudPersistenceEnabled = false;
+      return;
+    }
+    
+    const isNotFound = errStr.includes('not-found') || errStr.includes('NOT_FOUND') || errStr.includes('5');
+    
+    if (isNotFound && currentDbId !== '(default)' && firebaseApp) {
+      console.log('Attempting self-healing fallback to default database "(default)"...');
+      try {
+        currentDbId = '(default)';
+        firestoreDb = getFirestore(firebaseApp, '(default)');
+        await performSync(firestoreDb);
+        console.log('Self-healing fallback to "(default)" Firestore database succeeded!');
+      } catch (fallbackErr) {
+        console.error('Fallback to "(default)" database also failed:', fallbackErr);
+      }
     }
   }
 }
 
-function loadConfig(uid: string) {
-  const context = userSessions.get(uid);
-  if (!context) return;
-  const userConfigFile = path.join(process.cwd(), `whatsapp-config-${uid}.json`);
+function loadConfig() {
   try {
-    if (fs.existsSync(userConfigFile)) {
-      const data = fs.readFileSync(userConfigFile, 'utf-8');
+    if (fs.existsSync(CONFIG_FILE)) {
+      const data = fs.readFileSync(CONFIG_FILE, 'utf-8');
       const parsed = JSON.parse(data);
-      context.config.masterGroup = parsed.masterGroup || null;
-      context.config.targetGroups = parsed.targetGroups || [];
-      context.config.includeSenderPrefix = parsed.includeSenderPrefix !== undefined ? parsed.includeSenderPrefix : false;
-      context.config.forwardDelayMs = parsed.forwardDelayMs !== undefined ? Math.max(5000, Number(parsed.forwardDelayMs)) : 5000;
-      context.config.cloudPersistenceEnabled = parsed.cloudPersistenceEnabled !== undefined ? !!parsed.cloudPersistenceEnabled : true;
+      config.masterGroup = parsed.masterGroup || null;
+      config.targetGroups = parsed.targetGroups || [];
+      config.includeSenderPrefix = parsed.includeSenderPrefix !== undefined ? parsed.includeSenderPrefix : false;
+      config.forwardDelayMs = parsed.forwardDelayMs !== undefined ? Math.max(5000, Number(parsed.forwardDelayMs)) : 5000;
+      config.cloudPersistenceEnabled = parsed.cloudPersistenceEnabled !== undefined ? !!parsed.cloudPersistenceEnabled : true;
       if (parsed.affiliateConfig) {
-        context.config.affiliateConfig = { ...context.config.affiliateConfig, ...parsed.affiliateConfig };
+        config.affiliateConfig = { ...config.affiliateConfig, ...parsed.affiliateConfig };
       }
-      context.config.logs = parsed.logs || [];
-      console.log(`Configuration and logs successfully loaded from file for ${uid}.`);
+      config.logs = parsed.logs || [];
+      console.log('Configuration and logs successfully loaded from file.');
     }
   } catch (error) {
-    console.error(`Failed to load config for ${uid}:`, error);
+    console.error('Failed to load whatsapp-config.json:', error);
   }
 }
 
-function saveConfig(uid: string) {
-  const context = userSessions.get(uid);
-  if (!context) return;
-  const userConfigFile = path.join(process.cwd(), `whatsapp-config-${uid}.json`);
+function saveConfig() {
   try {
-    fs.writeFileSync(userConfigFile, JSON.stringify(context.config, null, 2), 'utf-8');
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
     
     // Save to Cloud Firestore as well asynchronously if enabled
-    if (context.config.cloudPersistenceEnabled && getFirestoreDb()) {
-      syncWithFirestore(uid, false).catch(err => {
-        console.error(`Async firestore sync failed for ${uid}:`, err);
+    if (config.cloudPersistenceEnabled && getFirestoreDb()) {
+      syncWithFirestore(false).catch(err => {
+        console.error('Async firestore sync failed:', err);
       });
     }
   } catch (error) {
-    console.error(`Failed to save config for ${uid}:`, error);
+    console.error('Failed to save whatsapp-config.json:', error);
   }
 }
 
@@ -413,98 +377,89 @@ function injectAffiliateLinks(text: string, affiliateConfig: any): { newText: st
   return { newText, isModified };
 }
 
-// Multi-user session management
-async function connectToWhatsApp(uid: string) {
-  const context = userSessions.get(uid);
-  if (!context) return;
+// Global reference of WhatsApp connection
+let sock: any = null;
 
-  if (context.connectionStatus === 'connecting' && context.currentQR === null) {
-    console.log(`WhatsApp [${uid}]: Connection already in progress.`);
-    return;
-  }
-  
-  if (context.connectionStatus === 'connected') {
-    console.log(`WhatsApp [${uid}]: Already connected.`);
-    return;
-  }
-
-  console.log(`WhatsApp [${uid}]: Initializing connection sequence...`);
-  context.connectionStatus = 'connecting';
-  context.currentQR = null;
-
-  const safetyTimeout = setTimeout(() => {
-    if (context.connectionStatus === 'connecting' && !context.currentQR) {
-      console.warn(`WhatsApp [${uid}]: Connection sequence timed out (1m).`);
-      context.connectionStatus = 'disconnected';
-    }
-  }, 60000);
+async function connectToWhatsApp() {
+  console.log('WhatsApp: Starting connection process...');
+  connectionStatus = 'connecting';
+  currentQR = null;
 
   try {
-    const { state, saveCreds } = await useFirestoreAuthState(uid);
-    console.log(`WhatsApp [${uid}]: Auth state loaded.`);
+    console.log('WhatsApp: Fetching auth state...');
+    const { state, saveCreds } = await useFirestoreAuthState('sessions');
 
-    context.sock = makeWASocket({
+    console.log('WhatsApp: Initializing Socket...');
+    // Create the socket connection
+    sock = makeWASocket({
       auth: state,
       logger: logger,
-      printQRInTerminal: true,
+      printQRInTerminal: true, // Habilitar no terminal ajuda no debug do Render
       browser: ['LinkFlow', 'Chrome', '1.0.0'],
-      connectTimeoutMs: 60000,
-      defaultQueryTimeoutMs: 0,
-      keepAliveIntervalMs: 10000,
     });
-    
-    console.log(`WhatsApp [${uid}]: Socket instance created.`);
 
-    context.sock.ev.on('creds.update', saveCreds);
+    // Save auth credentials whenever they update
+    sock.ev.on('creds.update', saveCreds);
 
-    context.sock.ev.on('connection.update', async (update: any) => {
+    // Track connection updates
+    sock.ev.on('connection.update', async (update: any) => {
       const { connection, lastDisconnect, qr } = update;
-      
+      console.log('WhatsApp: Connection Update ->', connection || 'pending', qr ? '(QR Received)' : '');
+
       if (qr) {
-        console.log(`WhatsApp [${uid}]: QR Code received.`);
         try {
-          context.currentQR = await QRCode.toDataURL(qr);
-          context.connectionStatus = 'disconnected';
-          clearTimeout(safetyTimeout);
-        } catch (err) {
-          console.error(`WhatsApp [${uid}]: Failed to process QR string:`, err);
+          console.log('WhatsApp: Generating QR Data URL...');
+          // Convert the raw QR text into a Base64 Client-readable Data URL
+          currentQR = await QRCode.toDataURL(qr);
+          connectionStatus = 'disconnected';
+          console.log('WhatsApp: QR Code ready for client');
+        } catch (qrErr) {
+          console.error('WhatsApp: Failed to generate QR Code data URL:', qrErr);
         }
       }
 
       if (connection === 'close') {
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-        console.log(`WhatsApp [${uid}]: Connection closed (${statusCode}). Reconnect: ${shouldReconnect}`);
+        console.log(`Connection closed. StatusCode: ${statusCode}. Will reconnect: ${shouldReconnect}`);
         
-        context.connectionStatus = 'disconnected';
-        context.currentQR = null;
-        clearTimeout(safetyTimeout);
+        connectionStatus = 'disconnected';
+        currentQR = null;
 
         if (shouldReconnect) {
-          setTimeout(() => connectToWhatsApp(uid), 5000);
+          // Re-establish connection
+          setTimeout(connectToWhatsApp, 3000);
         } else {
+          // Clean up auth info dir on logouts
           try {
-            fs.rmSync(path.join(process.cwd(), `auth_info_baileys_${uid}`), { recursive: true, force: true });
+            fs.rmSync(path.join(process.cwd(), 'auth_info_baileys'), { recursive: true, force: true });
           } catch (e) {}
-          console.log(`WhatsApp [${uid}]: Logged out, state cleared.`);
+          const db = getFirestoreDb();
+          if (db) {
+            try {
+              deleteDoc(doc(db, 'sessions', 'creds.json')).catch(() => {});
+            } catch (e) {}
+          }
+          console.log('Logged out. Ready for next scan.');
         }
       } else if (connection === 'open') {
-        console.log(`WhatsApp [${uid}]: Connection opened successfully!`);
-        context.connectionStatus = 'connected';
-        context.currentQR = null;
-        clearTimeout(safetyTimeout);
+        connectionStatus = 'connected';
+        currentQR = null;
 
-        context.userInfo = { 
-          jid: context.sock.user?.id || context.sock.user?.jid || '', 
-          name: context.sock.user?.name || 'WhatsApp Admin' 
-        };
+        const userJid = sock.user?.id || sock.user?.jid || '';
+        const userName = sock.user?.name || 'WhatsApp Admin';
+        userInfo = { jid: userJid, name: userName };
+        console.log(`Connected to WhatsApp successfully as ${userName} (${userJid})`);
 
-        setTimeout(() => refreshGroups(uid), 2000);
+        // Automatically fetch groups on connection open
+        setTimeout(() => {
+          refreshGroups();
+        }, 3000);
       }
     });
 
     // Listen to messages
-    context.sock.ev.on('messages.upsert', async (upsert: any) => {
+    sock.ev.on('messages.upsert', async (upsert: any) => {
       if (upsert.type !== 'notify') return;
 
       for (const msg of upsert.messages) {
@@ -513,9 +468,7 @@ async function connectToWhatsApp(uid: string) {
         const from = msg.key.remoteJid;
         if (!from) continue;
 
-        const config = context.config;
-
-        // Verify if message was received in the configured Master Group
+          // Verify if message was received in the configured Master Group
         if (config.masterGroup && from === config.masterGroup.id) {
           const originalText = getMessageText(msg.message);
           if (!originalText) continue;
@@ -538,19 +491,20 @@ async function connectToWhatsApp(uid: string) {
           for (const target of config.targetGroups) {
             if (!isFirst) {
               const currentDelay = config.forwardDelayMs !== undefined ? config.forwardDelayMs : 5000;
+              console.log(`Waiting anti-ban delay of ${currentDelay}ms before sending to ${target.name}`);
               await new Promise(resolve => setTimeout(resolve, currentDelay));
             }
             isFirst = false;
 
             try {
-              await context.sock.sendMessage(target.id, { text: messageToSend });
+              await sock.sendMessage(target.id, { text: messageToSend });
               targetsStatus.push({
                 targetId: target.id,
                 targetName: target.name,
                 status: 'success',
               });
             } catch (err: any) {
-              console.error(`Failed to forward message for ${uid} to group ${target.name} (${target.id}):`, err);
+              console.error(`Failed to forward message to group ${target.name} (${target.id}):`, err);
               targetsStatus.push({
                 targetId: target.id,
                 targetName: target.name,
@@ -579,23 +533,28 @@ async function connectToWhatsApp(uid: string) {
             }
 
             // Save this specific log directly to Firestore if enabled
-            if (context.config.cloudPersistenceEnabled) {
+            if (config.cloudPersistenceEnabled) {
               const firebaseDb = getFirestoreDb();
               if (firebaseDb) {
-                firebaseDb.doc(`users/${uid}/logs/${newLog.id}`).set(stripUndefined(newLog)).catch((err: any) => {
-                  console.error(`Error storing log for ${uid}:`, err);
+                setDoc(doc(firebaseDb, 'logs', newLog.id), stripUndefined(newLog)).catch(err => {
+                  console.error('Error storing message log to Firestore collection:', err);
+                  const errStr = String(err);
+                  if (errStr.includes('resource-exhausted') || errStr.includes('Quota limit exceeded')) {
+                    console.warn('Firestore quota exceeded for logs. Disabling cloud persistence.');
+                    config.cloudPersistenceEnabled = false;
+                  }
                 });
               }
             }
 
-            saveConfig(uid);
+            saveConfig();
           }
         }
       }
     });
   } catch (error) {
-    console.error(`Error starting WhatsApp connection for ${uid}:`, error);
-    context.connectionStatus = 'disconnected';
+    console.error('Error starting WhatsApp connection:', error);
+    connectionStatus = 'disconnected';
   }
 }
 
@@ -644,260 +603,191 @@ function getMessageText(message: any): string | null {
 }
 
 // Fetch all joining WhatsApp groups
-async function refreshGroups(uid: string) {
-  const context = userSessions.get(uid);
-  if (!context || !context.sock || context.connectionStatus !== 'connected') {
+async function refreshGroups() {
+  if (!sock || connectionStatus !== 'connected') {
     return;
   }
   try {
-    const groupsMap = await context.sock.groupFetchAllParticipating();
+    const groupsMap = await sock.groupFetchAllParticipating();
     const groupsList = Object.values(groupsMap).map((g: any) => ({
       id: g.id,
       name: g.subject || g.id,
     }));
-    context.availableGroups = groupsList;
-    console.log(`Refreshed groups for ${uid}. Total: ${groupsList.length}`);
+    availableGroups = groupsList;
+    console.log(`Refreshed participating groups. Total: ${groupsList.length}`);
   } catch (err) {
-    console.error(`Error fetching groups for ${uid}:`, err);
-  }
-}
-
-// Authentication Middleware
-async function authMiddleware(req: Request, res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  const idToken = authHeader.split('Bearer ')[1];
-  try {
-    const decodedToken = await getAdminAuth().verifyIdToken(idToken);
-    (req as any).uid = decodedToken.uid;
-    
-    // Initialize user session if not exists
-    if (!userSessions.has(decodedToken.uid)) {
-      const context: UserContext = {
-        uid: decodedToken.uid,
-        sock: null,
-        connectionStatus: 'disconnected',
-        currentQR: null,
-        userInfo: null,
-        availableGroups: [],
-        config: getDefaultConfig(),
-      };
-      userSessions.set(decodedToken.uid, context);
-      
-      // Load config
-      loadConfig(decodedToken.uid);
-      
-      // Try cloud sync
-      const db = getFirestoreDb();
-      if (context.config.cloudPersistenceEnabled && db) {
-        syncWithFirestore(decodedToken.uid, true).catch(e => console.error('Initial cloud sync failed:', e));
-      }
-
-      // Trigger connection
-      connectToWhatsApp(decodedToken.uid);
-    }
-    
-    next();
-  } catch (error) {
-    console.error('Auth Error:', error);
-    res.status(401).json({ error: 'Unauthorized' });
+    console.error('Error fetching participating groups:', err);
   }
 }
 
 async function startServer() {
-  console.log('--- SERVER STARTING ---');
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
+  const PORT = 3000;
 
   // Middleware
   app.use(express.json());
 
+  // Load initial settings
+  loadConfig();
+
+  // Sync from cloud firestore at starting if enabled in the background (non-blocking)
+  if (config.cloudPersistenceEnabled && getFirestoreDb()) {
+    syncWithFirestore(true).then(() => {
+      console.log('Background cloud startup sync completed successfully.');
+    }).catch((err) => {
+      console.error('Error fetching initial cloud settings at startup in background:', err);
+    });
+  }
+
+  // Connect to WhatsApp
+  connectToWhatsApp();
+
   // API Endpoints
-  app.get('/api/test-qr', async (req, res) => {
-    try {
-      const testQR = await QRCode.toDataURL('https://google.com');
-      res.json({ success: true, qr: testQR });
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
-    }
-  });
-
-  // Protect all API routes below
-  app.use('/api', authMiddleware);
-
   app.get('/api/state', (req, res) => {
-    const uid = (req as any).uid;
-    const context = userSessions.get(uid);
-    
-    if (!context) return res.status(500).json({ error: 'No context' });
-
-    // If connection dropped, trigger reconnect
-    if (context.connectionStatus === 'disconnected' && !context.currentQR) {
-      connectToWhatsApp(uid);
+    // If the server was sleeping (e.g. Cloud Run scale to zero) and connection dropped,
+    // trigger a reconnection when the frontend polls for state.
+    if (connectionStatus === 'disconnected' && !currentQR) {
+      console.log('State requested but connection is dead. Triggering reconnect...');
+      connectToWhatsApp();
     }
 
     res.json({
-      status: context.connectionStatus,
-      qr: context.currentQR,
-      userInfo: context.userInfo,
-      masterGroup: context.config.masterGroup,
-      targetGroups: context.config.targetGroups,
-      availableGroups: context.availableGroups,
-      logs: context.config.logs,
-      includeSenderPrefix: context.config.includeSenderPrefix,
-      forwardDelayMs: context.config.forwardDelayMs,
-      cloudPersistenceEnabled: context.config.cloudPersistenceEnabled,
-      affiliateConfig: context.config.affiliateConfig,
+      status: connectionStatus,
+      qr: currentQR,
+      userInfo,
+      masterGroup: config.masterGroup,
+      targetGroups: config.targetGroups,
+      availableGroups,
+      logs: config.logs,
+      includeSenderPrefix: config.includeSenderPrefix,
+      forwardDelayMs: config.forwardDelayMs,
+      cloudPersistenceEnabled: config.cloudPersistenceEnabled,
+      affiliateConfig: config.affiliateConfig,
     });
   });
 
   app.post('/api/config/master', (req, res) => {
-    const uid = (req as any).uid;
-    const context = userSessions.get(uid);
-    if (!context) return res.status(500).json({ error: 'No context' });
-
-    const { group } = req.body; 
-    context.config.masterGroup = group || null;
-    saveConfig(uid);
-    res.json({ success: true, masterGroup: context.config.masterGroup });
+    const { group } = req.body; // { id, name }
+    config.masterGroup = group || null;
+    saveConfig();
+    res.json({ success: true, masterGroup: config.masterGroup });
   });
 
   app.post('/api/config/target/add', (req, res) => {
-    const uid = (req as any).uid;
-    const context = userSessions.get(uid);
-    if (!context) return res.status(500).json({ error: 'No context' });
-
-    const { group } = req.body;
+    const { group } = req.body; // { id, name }
     if (!group || !group.id) {
       return res.status(400).json({ success: false, error: 'Grupo inválido' });
     }
 
-    const holds = context.config.targetGroups.some((g) => g.id === group.id);
+    // Check if JID is already added
+    const holds = config.targetGroups.some((g) => g.id === group.id);
     if (!holds) {
-      context.config.targetGroups.push(group);
-      saveConfig(uid);
+      config.targetGroups.push(group);
+      saveConfig();
     }
-    res.json({ success: true, targetGroups: context.config.targetGroups });
+    res.json({ success: true, targetGroups: config.targetGroups });
   });
 
   app.post('/api/config/target/remove', (req, res) => {
-    const uid = (req as any).uid;
-    const context = userSessions.get(uid);
-    if (!context) return res.status(500).json({ error: 'No context' });
-
     const { id } = req.body;
     if (!id) {
       return res.status(400).json({ success: false, error: 'ID de grupo inválido' });
     }
 
-    context.config.targetGroups = context.config.targetGroups.filter((g) => g.id !== id);
-    saveConfig(uid);
-    res.json({ success: true, targetGroups: context.config.targetGroups });
+    config.targetGroups = config.targetGroups.filter((g) => g.id !== id);
+    saveConfig();
+    res.json({ success: true, targetGroups: config.targetGroups });
   });
 
   app.post('/api/config/options', async (req, res) => {
-    const uid = (req as any).uid;
-    const context = userSessions.get(uid);
-    if (!context) return res.status(500).json({ error: 'No context' });
-
     const { includeSenderPrefix, forwardDelayMs, cloudPersistenceEnabled } = req.body;
     if (includeSenderPrefix !== undefined) {
-      context.config.includeSenderPrefix = !!includeSenderPrefix;
+      config.includeSenderPrefix = !!includeSenderPrefix;
     }
     if (forwardDelayMs !== undefined) {
-      context.config.forwardDelayMs = Math.max(5000, Number(forwardDelayMs));
+      config.forwardDelayMs = Math.max(5000, Number(forwardDelayMs));
     }
     if (cloudPersistenceEnabled !== undefined) {
-      const prevVal = context.config.cloudPersistenceEnabled;
-      context.config.cloudPersistenceEnabled = !!cloudPersistenceEnabled;
+      const prevVal = config.cloudPersistenceEnabled;
+      config.cloudPersistenceEnabled = !!cloudPersistenceEnabled;
       
-      if (context.config.cloudPersistenceEnabled && !prevVal && getFirestoreDb()) {
+      // If we are enabling cloud persistence, try loading existing cloud setup
+      if (config.cloudPersistenceEnabled && !prevVal && getFirestoreDb()) {
         try {
-          await syncWithFirestore(uid, true);
+          await syncWithFirestore(true);
         } catch (err) {
-          console.error(`Error enabling cloud sync for ${uid}:`, err);
+          console.error('Error enabling cloud database sync:', err);
         }
       }
     }
-    saveConfig(uid);
+    saveConfig();
     res.json({ 
       success: true, 
-      includeSenderPrefix: context.config.includeSenderPrefix,
-      forwardDelayMs: context.config.forwardDelayMs,
-      cloudPersistenceEnabled: context.config.cloudPersistenceEnabled
+      includeSenderPrefix: config.includeSenderPrefix,
+      forwardDelayMs: config.forwardDelayMs,
+      cloudPersistenceEnabled: config.cloudPersistenceEnabled
     });
   });
 
   app.post('/api/config/affiliate', (req, res) => {
-    const uid = (req as any).uid;
-    const context = userSessions.get(uid);
-    if (!context) return res.status(500).json({ error: 'No context' });
-
     const { mercadoLivre, shopee, amazon, magazineLuiza, aliexpress, manualLinks, useManualLinks } = req.body;
+    console.log('[DEBUG] Received affiliate config:', { manualLinks, useManualLinks });
     
-    if (mercadoLivre !== undefined) context.config.affiliateConfig.mercadoLivre = String(mercadoLivre);
-    if (shopee !== undefined) context.config.affiliateConfig.shopee = String(shopee);
-    if (amazon !== undefined) context.config.affiliateConfig.amazon = String(amazon);
-    if (magazineLuiza !== undefined) context.config.affiliateConfig.magazineLuiza = String(magazineLuiza);
-    if (aliexpress !== undefined) context.config.affiliateConfig.aliexpress = String(aliexpress);
+    if (mercadoLivre !== undefined) config.affiliateConfig.mercadoLivre = String(mercadoLivre);
+    if (shopee !== undefined) config.affiliateConfig.shopee = String(shopee);
+    if (amazon !== undefined) config.affiliateConfig.amazon = String(amazon);
+    if (magazineLuiza !== undefined) config.affiliateConfig.magazineLuiza = String(magazineLuiza);
+    if (aliexpress !== undefined) config.affiliateConfig.aliexpress = String(aliexpress);
     
-    if (manualLinks !== undefined) context.config.affiliateConfig.manualLinks = manualLinks;
-    if (useManualLinks !== undefined) context.config.affiliateConfig.useManualLinks = useManualLinks;
+    if (manualLinks !== undefined) config.affiliateConfig.manualLinks = manualLinks;
+    if (useManualLinks !== undefined) config.affiliateConfig.useManualLinks = useManualLinks;
     
-    saveConfig(uid);
-    res.json({ success: true, affiliateConfig: context.config.affiliateConfig });
+    console.log('[DEBUG] Server mapping result:', config.affiliateConfig);
+    
+    saveConfig();
+    res.json({ success: true, affiliateConfig: config.affiliateConfig });
   });
 
   app.post('/api/refresh-groups', async (req, res) => {
-    const uid = (req as any).uid;
-    const context = userSessions.get(uid);
-    if (!context) return res.status(500).json({ error: 'No context' });
-
-    if (context.connectionStatus !== 'connected') {
+    if (connectionStatus !== 'connected') {
       return res.status(400).json({ success: false, error: 'Dispositivo WhatsApp não conectado' });
     }
-    await refreshGroups(uid);
-    res.json({ success: true, availableGroups: context.availableGroups });
+    await refreshGroups();
+    res.json({ success: true, availableGroups });
   });
 
   app.post('/api/disconnect', async (req, res) => {
-    const uid = (req as any).uid;
-    const context = userSessions.get(uid);
-    if (!context) return res.status(500).json({ error: 'No context' });
+    console.log('Initiating logout request...');
+    connectionStatus = 'disconnected';
+    currentQR = null;
+    userInfo = null;
+    availableGroups = [];
 
-    console.log(`Logout request for ${uid}`);
-    context.connectionStatus = 'disconnected';
-    context.currentQR = null;
-    context.userInfo = null;
-    context.availableGroups = [];
-
-    if (context.sock) {
+    if (sock) {
       try {
-        await context.sock.logout();
+        await sock.logout();
       } catch (e) {}
       try {
-        context.sock.end(undefined);
+        sock.end(undefined);
       } catch (e) {}
-      context.sock = null;
+      sock = null;
     }
 
     try {
-      fs.rmSync(path.join(process.cwd(), `auth_info_baileys_${uid}`), { recursive: true, force: true });
+      fs.rmSync(path.join(process.cwd(), 'auth_info_baileys'), { recursive: true, force: true });
     } catch (err) {
-      console.error(`Error deleting auth directory for ${uid}:`, err);
+      console.error('Error deleting auth_info directory:', err);
     }
     const db = getFirestoreDb();
     if (db) {
       try {
-        await db.doc(`users/${uid}/baileys_auth/creds.json`).delete();
+        await deleteDoc(doc(db, 'sessions', 'creds.json'));
       } catch (e) {}
     }
 
+    // Create fresh connection
     setTimeout(() => {
-      connectToWhatsApp(uid);
+      connectToWhatsApp();
     }, 1500);
 
     res.json({ success: true });

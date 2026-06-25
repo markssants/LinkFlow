@@ -100,27 +100,11 @@ export default function App() {
   const [selectedMasterId, setSelectedMasterId] = useState<string>('');
   const [selectedTargetId, setSelectedTargetId] = useState<string>('');
 
-  // Fetch helper with Auth
-  const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
-    if (!user) return null;
-    const token = await user.getIdToken();
-    const headers = {
-      ...options.headers,
-      'Authorization': `Bearer ${token}`,
-    };
-    return fetch(url, { ...options, headers });
-  };
-
   // Fetch server state
   const fetchState = async (showLoading = false) => {
     if (showLoading) setIsLoading(true);
-    if (!user) {
-      if (showLoading) setIsLoading(false);
-      return;
-    }
     try {
-      const response = await fetchWithAuth('/api/state');
-      if (!response) return;
+      const response = await fetch('/api/state');
       const text = await response.text();
       
       // Ignore HTML responses (usually from dev server restarting or proxy)
@@ -148,13 +132,12 @@ export default function App() {
 
   // Poll state every 2 seconds
   useEffect(() => {
-    if (!user) return;
     fetchState(true);
     const interval = setInterval(() => {
       fetchState(false);
     }, 2000);
     return () => clearInterval(interval);
-  }, [user]);
+  }, []);
 
   // Set Master Group
   const handleSetMasterGroup = async (groupId: string) => {
@@ -163,12 +146,12 @@ export default function App() {
     if (!targetGroup) return;
 
     try {
-      const response = await fetchWithAuth('/api/config/master', {
+      const response = await fetch('/api/config/master', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ group: targetGroup }),
       });
-      if (response && response.ok) {
+      if (response.ok) {
         const data = await response.json();
         setState(prev => ({ ...prev, masterGroup: data.masterGroup }));
       }
@@ -184,12 +167,12 @@ export default function App() {
     if (!targetGroup) return;
 
     try {
-      const response = await fetchWithAuth('/api/config/target/add', {
+      const response = await fetch('/api/config/target/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ group: targetGroup }),
       });
-      if (response && response.ok) {
+      if (response.ok) {
         const data = await response.json();
         setState(prev => ({ ...prev, targetGroups: data.targetGroups }));
         setSelectedTargetId(''); // Reset selector
@@ -202,12 +185,12 @@ export default function App() {
   // Remove Target Group
   const handleRemoveTargetGroup = async (id: string) => {
     try {
-      const response = await fetchWithAuth('/api/config/target/remove', {
+      const response = await fetch('/api/config/target/remove', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id }),
       });
-      if (response && response.ok) {
+      if (response.ok) {
         const data = await response.json();
         setState(prev => ({ ...prev, targetGroups: data.targetGroups }));
       }
@@ -219,12 +202,12 @@ export default function App() {
   // Toggle sender prefix option
   const handleTogglePrefix = async (checked: boolean) => {
     try {
-      const response = await fetchWithAuth('/api/config/options', {
+      const response = await fetch('/api/config/options', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ includeSenderPrefix: checked }),
       });
-      if (response && response.ok) {
+      if (response.ok) {
         const data = await response.json();
         setState(prev => ({ ...prev, includeSenderPrefix: data.includeSenderPrefix }));
       }
@@ -236,12 +219,12 @@ export default function App() {
   // Update forward delay setting
   const handleUpdateDelay = async (delayMs: number) => {
     try {
-      const response = await fetchWithAuth('/api/config/options', {
+      const response = await fetch('/api/config/options', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ forwardDelayMs: delayMs }),
       });
-      if (response && response.ok) {
+      if (response.ok) {
         const data = await response.json();
         setState(prev => ({ ...prev, forwardDelayMs: data.forwardDelayMs }));
       }
@@ -253,12 +236,12 @@ export default function App() {
   // Toggle database cloud persistence sync setting
   const handleToggleCloudPersistence = async (enabled: boolean) => {
     try {
-      const response = await fetchWithAuth('/api/config/options', {
+      const response = await fetch('/api/config/options', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cloudPersistenceEnabled: enabled }),
       });
-      if (response && response.ok) {
+      if (response.ok) {
         await fetchState(false);
       }
     } catch (err) {
@@ -270,8 +253,8 @@ export default function App() {
   const handleRefreshGroups = async () => {
     setIsRefreshing(true);
     try {
-      const response = await fetchWithAuth('/api/refresh-groups', { method: 'POST' });
-      if (response && response.ok) {
+      const response = await fetch('/api/refresh-groups', { method: 'POST' });
+      if (response.ok) {
         const data = await response.json();
         setState(prev => ({ ...prev, availableGroups: data.availableGroups }));
       }
@@ -284,12 +267,12 @@ export default function App() {
 
   const handleSaveAffiliateConfig = async (config: AffiliateConfig) => {
     try {
-      const response = await fetchWithAuth('/api/config/affiliate', {
+      const response = await fetch('/api/config/affiliate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),
       });
-      if (response && response.ok) {
+      if (response.ok) {
         const data = await response.json();
         setState(prev => ({ ...prev, affiliateConfig: data.affiliateConfig }));
       }
@@ -303,8 +286,8 @@ export default function App() {
     setShowDisconnectConfirm(false);
     setIsDisconnecting(true);
     try {
-      const response = await fetchWithAuth('/api/disconnect', { method: 'POST' });
-      if (response && response.ok) {
+      const response = await fetch('/api/disconnect', { method: 'POST' });
+      if (response.ok) {
         await fetchState(false);
       }
     } catch (err) {
