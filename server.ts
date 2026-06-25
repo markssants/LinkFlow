@@ -643,8 +643,21 @@ async function startServer() {
     
     console.log(`WhatsApp: Requesting pairing code for ${phoneNumber}`);
     
-    if (!sock) {
+    // If not connected and not connecting, start connection
+    if (!sock && !isConnecting) {
       await connectToWhatsApp();
+    }
+
+    // Robust wait for socket initialization (up to 10 seconds)
+    let attempts = 0;
+    while (!sock && attempts < 20) {
+      console.log(`WhatsApp: Waiting for socket initialization... (attempt ${attempts + 1}/20)`);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      attempts++;
+    }
+
+    if (!sock) {
+      return res.status(500).json({ error: 'Servidor WhatsApp não inicializou a tempo. Tente novamente em instantes.' });
     }
 
     try {
