@@ -389,10 +389,11 @@ function injectAffiliateLinks(text: string, affiliateConfig: any): { newText: st
 
 // Global reference of WhatsApp connection
 let sock: any = null;
+let isInitializing = false;
 
 async function connectToWhatsApp() {
-  if (connectionStatus === 'connecting' && currentQR === null) {
-    console.log('WhatsApp: Connection already in progress. Polling for updates...');
+  if (isInitializing) {
+    console.log('WhatsApp: Connection initialization already in progress...');
     return;
   }
   
@@ -401,15 +402,31 @@ async function connectToWhatsApp() {
     return;
   }
 
-  console.log('WhatsApp: Initializing connection sequence...');
+  isInitializing = true;
+  console.log('WhatsApp: Starting connection sequence...');
   connectionStatus = 'connecting';
   currentQR = null;
+
+  // Cleanup existing socket if any
+  if (sock) {
+    console.log('WhatsApp: Cleaning up existing socket listeners...');
+    try {
+      sock.ev.removeAllListeners('connection.update');
+      sock.ev.removeAllListeners('creds.update');
+      sock.ev.removeAllListeners('messages.upsert');
+      sock.end(undefined);
+    } catch (e) {
+      console.warn('WhatsApp: Error during socket cleanup:', e);
+    }
+    sock = null;
+  }
 
   // Safety timeout: reset status if stuck in connecting for 1 minute
   const safetyTimeout = setTimeout(() => {
     if (connectionStatus === 'connecting' && !currentQR) {
-      console.warn('WhatsApp: Connection sequence timed out (1m). Resetting to disconnected.');
+      console.warn('WhatsApp: Connection sequence timed out (1m).');
       connectionStatus = 'disconnected';
+      isInitializing = false;
     }
   }, 60000);
 
@@ -423,8 +440,12 @@ async function connectToWhatsApp() {
       printQRInTerminal: true,
       browser: ['LinkFlow', 'Chrome', '1.0.0'],
       connectTimeoutMs: 60000,
-      defaultQueryTimeoutMs: 0,
-      keepAliveIntervalMs: 10000,
+      defaultQueryTimeoutMs: 60000, // Increase timeout
+      keepAliveIntervalMs: 30000,
+      markOnlineOnConnect: false,
+      generateHighQualityLinkPreview: false,
+      syncFullHistory: false,
+      // Use fire-and-forget for mark as read
     });
     
     console.log('WhatsApp: Socket instance created.');
@@ -435,38 +456,48 @@ async function connectToWhatsApp() {
       const { connection, lastDisconnect, qr } = update;
       
       if (qr) {
-        console.log('WhatsApp: QR Code received from server.');
+        console.log('WhatsApp: QR Code received.');
         try {
           currentQR = await QRCode.toDataURL(qr);
-          connectionStatus = 'disconnected'; // Keep as disconnected so UI knows it needs scan
-          console.log(`WhatsApp: QR Code Data URL ready (${currentQR.length} bytes)`);
+          connectionStatus = 'disconnected'; 
+          console.log(`WhatsApp: QR ready (${currentQR.length} bytes)`);
           clearTimeout(safetyTimeout);
+          isInitializing = false;
         } catch (err) {
-          console.error('WhatsApp: Failed to process QR string:', err);
+          console.error('WhatsApp: QR processing error:', err);
         }
       }
 
       if (connection === 'close') {
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-        console.log(`WhatsApp: Connection closed (${statusCode}). Should reconnect: ${shouldReconnect}`);
+        const errorMsg = (lastDisconnect?.error as any)?.message || 'Unknown error';
+        
+        const isConflict = errorMsg.includes('conflict') || statusCode === 409 || statusCode === 440;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut && !isConflict;
+        
+        console.log(`WhatsApp: Connection closed (${statusCode}). Error: ${errorMsg}. Reconnect: ${shouldReconnect}`);
         
         connectionStatus = 'disconnected';
         currentQR = null;
         clearTimeout(safetyTimeout);
+        isInitializing = false;
 
-        if (shouldReconnect) {
+        if (isConflict) {
+          console.warn('WhatsApp: Conflict detected. Waiting 15s for session cleanup...');
+          setTimeout(connectToWhatsApp, 15000);
+        } else if (shouldReconnect) {
           setTimeout(connectToWhatsApp, 5000);
         } else {
           try {
             fs.rmSync(path.join(process.cwd(), 'auth_info_baileys'), { recursive: true, force: true });
           } catch (e) {}
-          console.log('WhatsApp: Logged out, state cleared.');
+          console.log('WhatsApp: Session cleared.');
         }
       } else if (connection === 'open') {
         console.log('WhatsApp: Connection opened successfully!');
         connectionStatus = 'connected';
         currentQR = null;
+        isInitializing = false;
         clearTimeout(safetyTimeout);
 
         userInfo = { 
@@ -483,7 +514,7 @@ async function connectToWhatsApp() {
       if (upsert.type !== 'notify') return;
 
       for (const msg of upsert.messages) {
-        if (!msg.message) continue;
+        if (!msg.message || msg.key.remoteJid === 'status@broadcast') continue;
 
         const from = msg.key.remoteJid;
         if (!from) continue;
@@ -575,6 +606,7 @@ async function connectToWhatsApp() {
   } catch (error) {
     console.error('Error starting WhatsApp connection:', error);
     connectionStatus = 'disconnected';
+    isInitializing = false;
   }
 }
 
@@ -676,7 +708,7 @@ async function startServer() {
   app.get('/api/state', (req, res) => {
     // If the server was sleeping (e.g. Cloud Run scale to zero) and connection dropped,
     // trigger a reconnection when the frontend polls for state.
-    if (connectionStatus === 'disconnected' && !currentQR) {
+    if (connectionStatus === 'disconnected' && !currentQR && !isInitializing) {
       console.log('State requested but connection is dead. Triggering reconnect...');
       connectToWhatsApp();
     }
