@@ -103,27 +103,6 @@ let config = {
   includeSenderPrefix: false,
   forwardDelayMs: 5000,
   cloudPersistenceEnabled: true,
-  affiliateConfig: {
-    mercadoLivre: '',
-    shopee: '',
-    amazon: '',
-    magazineLuiza: '',
-    aliexpress: '',
-    manualLinks: {
-      mercadoLivre: '',
-      shopee: '',
-      amazon: '',
-      magazineLuiza: '',
-      aliexpress: ''
-    },
-    useManualLinks: {
-      mercadoLivre: false,
-      shopee: false,
-      amazon: false,
-      magazineLuiza: false,
-      aliexpress: false
-    }
-  },
   logs: [] as ForwardLog[],
 };
 
@@ -162,9 +141,6 @@ async function syncWithFirestore(isInitialLoad: boolean) {
         config.targetGroups = cloudData.targetGroups || [];
         config.includeSenderPrefix = cloudData.includeSenderPrefix !== undefined ? cloudData.includeSenderPrefix : false;
         config.forwardDelayMs = cloudData.forwardDelayMs !== undefined ? Math.max(5000, Number(cloudData.forwardDelayMs)) : 5000;
-        if (cloudData.affiliateConfig) {
-          config.affiliateConfig = { ...config.affiliateConfig, ...cloudData.affiliateConfig };
-        }
         // Load logs from dedicated Firestore collection if possible
         try {
           const logsCol = collection(databaseInstance, 'logs');
@@ -202,7 +178,6 @@ async function syncWithFirestore(isInitialLoad: boolean) {
           includeSenderPrefix: config.includeSenderPrefix,
           forwardDelayMs: config.forwardDelayMs,
           cloudPersistenceEnabled: true,
-          affiliateConfig: config.affiliateConfig,
           logs: config.logs
         }));
         console.log('Created initial document in LinkFlow Cloud Database.');
@@ -215,7 +190,6 @@ async function syncWithFirestore(isInitialLoad: boolean) {
         includeSenderPrefix: config.includeSenderPrefix,
         forwardDelayMs: config.forwardDelayMs,
         cloudPersistenceEnabled: true,
-        affiliateConfig: config.affiliateConfig,
         logs: config.logs
       }));
       console.log('Successfully updated settings TO LinkFlow Cloud Database.');
@@ -262,9 +236,6 @@ function loadConfig() {
       config.includeSenderPrefix = parsed.includeSenderPrefix !== undefined ? parsed.includeSenderPrefix : false;
       config.forwardDelayMs = parsed.forwardDelayMs !== undefined ? Math.max(5000, Number(parsed.forwardDelayMs)) : 5000;
       config.cloudPersistenceEnabled = parsed.cloudPersistenceEnabled !== undefined ? !!parsed.cloudPersistenceEnabled : true;
-      if (parsed.affiliateConfig) {
-        config.affiliateConfig = { ...config.affiliateConfig, ...parsed.affiliateConfig };
-      }
       config.logs = parsed.logs || [];
       console.log('Configuration and logs successfully loaded from file.');
     }
@@ -286,95 +257,6 @@ function saveConfig() {
   } catch (error) {
     console.error('Failed to save whatsapp-config.json:', error);
   }
-}
-
-// Helper to inject affiliate links
-function injectAffiliateLinks(text: string, affiliateConfig: any): { newText: string; isModified: boolean } {
-  if (!affiliateConfig) return { newText: text, isModified: false };
-  let isModified = false;
-
-  const urlRegex = /(https?:\/\/[^\s]+)/g;
-  const newText = text.replace(urlRegex, (url) => {
-    try {
-      const u = new URL(url);
-      let changed = false;
-
-      // Check if the URL is just a homepage/platform link
-      const isHomepage = u.pathname === '/' || u.pathname === '';
-
-      // Amazon
-      if ((u.hostname.includes('amazon.com') || u.hostname.includes('amzn.to'))) {
-        if (isHomepage && affiliateConfig.manualLinks?.amazon) {
-          isModified = true;
-          return affiliateConfig.manualLinks.amazon;
-        } else if (affiliateConfig.amazon) {
-          u.searchParams.set('tag', affiliateConfig.amazon);
-          changed = true;
-        }
-      }
-      
-      // Shopee
-      if ((u.hostname.includes('shopee.com.br') || u.hostname.includes('shp.ee'))) {
-        if (isHomepage && affiliateConfig.manualLinks?.shopee) {
-          isModified = true;
-          return affiliateConfig.manualLinks.shopee;
-        } else if (affiliateConfig.shopee) {
-          u.searchParams.set('af_id', affiliateConfig.shopee);
-          changed = true;
-        }
-      }
-      
-      // Mercado Livre
-      if ((u.hostname.includes('mercadolivre.com.br') || u.hostname.includes('mercadopago.com.br') || u.hostname.includes('meli.la'))) {
-        // Special case for meli.la which might be used as a shortlink for products
-        const isMeliHomepage = isHomepage || (u.hostname.includes('meli.la') && (u.pathname === '/' || u.pathname === ''));
-        
-        if (isMeliHomepage && affiliateConfig.manualLinks?.mercadoLivre) {
-          isModified = true;
-          return affiliateConfig.manualLinks.mercadoLivre;
-        } else if (affiliateConfig.mercadoLivre) {
-          if (u.hostname.includes('meli.la')) {
-            isModified = true;
-            return `https://meli.la/${affiliateConfig.mercadoLivre}`;
-          }
-          u.searchParams.set('affiliate_id', affiliateConfig.mercadoLivre);
-          changed = true;
-        }
-      }
-      
-      // Magazine Luiza
-      if ((u.hostname.includes('magazineluiza.com.br') || u.hostname.includes('magalu.com'))) {
-        if (isHomepage && affiliateConfig.manualLinks?.magazineLuiza) {
-          isModified = true;
-          return affiliateConfig.manualLinks.magazineLuiza;
-        } else if (affiliateConfig.magazineLuiza) {
-          u.searchParams.set('parceiro', affiliateConfig.magazineLuiza);
-          changed = true;
-        }
-      }
-
-      // AliExpress
-      if ((u.hostname.includes('aliexpress.com') || u.hostname.includes('a.aliexpress.com'))) {
-        if (isHomepage && affiliateConfig.manualLinks?.aliexpress) {
-          isModified = true;
-          return affiliateConfig.manualLinks.aliexpress;
-        } else if (affiliateConfig.aliexpress) {
-          u.searchParams.set('trackingId', affiliateConfig.aliexpress);
-          changed = true;
-        }
-      }
-
-      if (changed) {
-        isModified = true;
-        return u.toString();
-      }
-      return url;
-    } catch (e) {
-      return url;
-    }
-  });
-
-  return { newText, isModified };
 }
 
 // Global reference of WhatsApp connection
@@ -475,8 +357,7 @@ async function connectToWhatsApp() {
 
           const senderName = msg.pushName || 'Participante';
           
-          // Inject affiliate links
-          const { newText: processedText, isModified } = injectAffiliateLinks(originalText, config.affiliateConfig);
+          const processedText = originalText;
 
           // Format text based on includeSenderPrefix preference
           let messageToSend = processedText;
@@ -521,7 +402,6 @@ async function connectToWhatsApp() {
               timestamp: new Date().toISOString(),
               senderName,
               masterGroupName: config.masterGroup ? config.masterGroup.name : undefined,
-              originalText: isModified ? originalText : undefined,
               text: processedText,
               targets: targetsStatus,
             };
@@ -662,7 +542,6 @@ async function startServer() {
       includeSenderPrefix: config.includeSenderPrefix,
       forwardDelayMs: config.forwardDelayMs,
       cloudPersistenceEnabled: config.cloudPersistenceEnabled,
-      affiliateConfig: config.affiliateConfig,
     });
   });
 
@@ -727,25 +606,6 @@ async function startServer() {
       forwardDelayMs: config.forwardDelayMs,
       cloudPersistenceEnabled: config.cloudPersistenceEnabled
     });
-  });
-
-  app.post('/api/config/affiliate', (req, res) => {
-    const { mercadoLivre, shopee, amazon, magazineLuiza, aliexpress, manualLinks, useManualLinks } = req.body;
-    console.log('[DEBUG] Received affiliate config:', { manualLinks, useManualLinks });
-    
-    if (mercadoLivre !== undefined) config.affiliateConfig.mercadoLivre = String(mercadoLivre);
-    if (shopee !== undefined) config.affiliateConfig.shopee = String(shopee);
-    if (amazon !== undefined) config.affiliateConfig.amazon = String(amazon);
-    if (magazineLuiza !== undefined) config.affiliateConfig.magazineLuiza = String(magazineLuiza);
-    if (aliexpress !== undefined) config.affiliateConfig.aliexpress = String(aliexpress);
-    
-    if (manualLinks !== undefined) config.affiliateConfig.manualLinks = manualLinks;
-    if (useManualLinks !== undefined) config.affiliateConfig.useManualLinks = useManualLinks;
-    
-    console.log('[DEBUG] Server mapping result:', config.affiliateConfig);
-    
-    saveConfig();
-    res.json({ success: true, affiliateConfig: config.affiliateConfig });
   });
 
   app.post('/api/refresh-groups', async (req, res) => {

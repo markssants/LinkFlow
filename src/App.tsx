@@ -23,8 +23,7 @@ import {
   FileText
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { AffiliateConfigurator } from './components/AffiliateConfigurator';
-import { ConnectionStatus, Group, ForwardLog, WhatsAppState, AffiliateConfig } from './types';
+import { ConnectionStatus, Group, ForwardLog, WhatsAppState } from './types';
 import { auth, googleProvider } from './lib/firebase-client';
 import { signInWithPopup, onAuthStateChanged, signOut, User } from 'firebase/auth';
 
@@ -36,7 +35,6 @@ export default function App() {
   const [passwordError, setPasswordError] = useState('');
   const [user, setUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'affiliates'>('dashboard');
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     return (localStorage.getItem('theme') as 'light' | 'dark') || 'light';
@@ -262,22 +260,6 @@ export default function App() {
       console.error('Erro ao atualizar grupos:', err);
     } finally {
       setIsRefreshing(false);
-    }
-  };
-
-  const handleSaveAffiliateConfig = async (config: AffiliateConfig) => {
-    try {
-      const response = await fetch('/api/config/affiliate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setState(prev => ({ ...prev, affiliateConfig: data.affiliateConfig }));
-      }
-    } catch (err) {
-      console.error('Erro ao salvar config de afiliados:', err);
     }
   };
 
@@ -528,35 +510,8 @@ export default function App() {
           {/* ACTIVE WORKSPACE: (When WhatsApp is Connected) */}
           {state.status === 'connected' && (
             <>
-              {/* Navigation Tabs */}
-              <div className="lg:col-span-12 mb-2">
-                <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-2xl w-full max-w-sm ml-0 shadow-inner">
-                  <button
-                    onClick={() => setActiveTab('dashboard')}
-                    className={`flex-1 py-2 text-sm font-semibold rounded-xl transition-all ${
-                      activeTab === 'dashboard'
-                        ? 'bg-white dark:bg-slate-700 shadow flex items-center justify-center text-slate-800 dark:text-slate-100'
-                        : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
-                    }`}
-                  >
-                    Dashboard
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('affiliates')}
-                    className={`flex-1 py-2 px-4 text-sm font-semibold rounded-xl transition-all ${
-                      activeTab === 'affiliates'
-                        ? 'bg-white dark:bg-slate-700 shadow flex items-center justify-center text-slate-800 dark:text-slate-100'
-                        : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
-                    }`}
-                  >
-                    Afiliados
-                  </button>
-                </div>
-              </div>
-
-              {activeTab === 'dashboard' ? (
-                <>
-                  {/* LEFT COLUMN: Setup groups */}
+              {/* Dashboard View */}
+              {/* LEFT COLUMN: Setup groups */}
                   <div className="lg:col-span-7 space-y-8">
                     
                     {/* Configuration Section Card */}
@@ -858,18 +813,6 @@ export default function App() {
                             {log.text}
                           </div>
                           
-                          {/* Original Text Warning */}
-                          {log.originalText && (
-                            <div className="mt-2 pt-2 border-t border-slate-200 dark:border-slate-700">
-                              <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block mb-1">
-                                Texto Original (com tags alteradas):
-                              </span>
-                              <div className="bg-slate-100 dark:bg-slate-700 p-2 rounded-lg text-slate-600 dark:text-slate-400 text-[10px] font-mono break-all whitespace-pre-wrap opacity-80">
-                                {log.originalText}
-                              </div>
-                            </div>
-                          )}
-
                           {/* Target Forward Status Checklist */}
                           <div className="space-y-1.5 pt-1 border-t border-slate-200/50 dark:border-slate-700/50 transition-colors">
                             <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide block">
@@ -912,12 +855,6 @@ export default function App() {
                 </div>
 
               </div>
-              </>
-              ) : (
-                <div className="lg:col-span-12 space-y-8">
-                  <AffiliateConfigurator initialConfig={state.affiliateConfig} onSave={handleSaveAffiliateConfig} />
-                </div>
-              )}
             </>
           )}
 

@@ -17,31 +17,8 @@ export interface ForwardLog {
   timestamp: string;
   senderName: string;
   masterGroupName?: string;
-  originalText?: string;
   text: string;
   targets: LogTarget[];
-}
-
-export interface AffiliateConfig {
-  mercadoLivre: string;
-  shopee: string;
-  amazon: string;
-  magazineLuiza: string;
-  aliexpress?: string;
-  manualLinks?: {
-    mercadoLivre: string;
-    shopee: string;
-    amazon: string;
-    magazineLuiza: string;
-    aliexpress?: string;
-  };
-  useManualLinks?: {
-    mercadoLivre: boolean;
-    shopee: boolean;
-    amazon: boolean;
-    magazineLuiza: boolean;
-    aliexpress?: boolean;
-  };
 }
 
 export interface WhatsAppState {
@@ -55,5 +32,4 @@ export interface WhatsAppState {
   includeSenderPrefix: boolean;
   forwardDelayMs: number;
   cloudPersistenceEnabled: boolean;
-  affiliateConfig?: AffiliateConfig;
 }
