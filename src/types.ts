@@ -48,6 +48,9 @@ export interface WhatsAppState {
   status: ConnectionStatus;
   qr: string | null;
   userInfo: { jid: string; name?: string } | null;
+  isConnecting?: boolean;
+  lastError?: string | null;
+  lastQRTimestamp?: number;
   masterGroup: Group | null;
   targetGroups: Group[];
   availableGroups: Group[];

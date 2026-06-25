@@ -487,17 +487,36 @@ export default function App() {
                         <div className="absolute inset-0 border border-dashed border-emerald-400 rounded-xl animate-pulse pointer-events-none" />
                       </div>
                     ) : (
-                      <div className="w-56 h-56 flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 bg-white dark:bg-slate-800 rounded-xl shadow-inner border border-slate-200 dark:border-slate-700 transition-colors">
-                        <QrCode className="w-12 h-12 mb-3 animate-pulse text-emerald-500/80" />
-                        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Gerando código QR...</span>
-                        <span className="text-[10px] text-slate-400 mt-1">Aguarde alguns segundos</span>
-                        
-                        <button 
-                          onClick={() => fetch('/api/whatsapp/reconnect', { method: 'POST' }).then(() => fetchState(true))}
-                          className="mt-4 px-3 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-[10px] font-bold text-slate-600 dark:text-slate-400 rounded-lg transition-colors cursor-pointer"
-                        >
-                          Não carregou? Clique aqui para reiniciar
-                        </button>
+                      <div className="w-56 h-56 flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 bg-white dark:bg-slate-800 rounded-xl shadow-inner border border-slate-200 dark:border-slate-700 transition-colors overflow-hidden">
+                        {state.lastError ? (
+                          <div className="flex flex-col items-center p-2 text-center">
+                            <AlertCircle className="w-8 h-8 text-red-500 mb-2" />
+                            <span className="text-[10px] font-bold text-red-600 mb-1">Erro de conexão</span>
+                            <p className="text-[8px] text-slate-400 mb-3 max-w-[160px] line-clamp-3">{state.lastError}</p>
+                            <button 
+                              onClick={() => {
+                                setIsLoading(true);
+                                fetch('/api/whatsapp/reconnect', { method: 'POST' }).then(() => fetchState(true)).finally(() => setIsLoading(false));
+                              }}
+                              className="px-3 py-1 bg-slate-900 text-white text-[10px] font-bold rounded-lg"
+                            >
+                              Tentar Denovo
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <QrCode className="w-12 h-12 mb-3 animate-pulse text-emerald-500/80" />
+                            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Gerando código QR...</span>
+                            <span className="text-[10px] text-slate-400 mt-1">Aguarde alguns segundos</span>
+                            
+                            <button 
+                              onClick={() => fetch('/api/whatsapp/reconnect', { method: 'POST' }).then(() => fetchState(true))}
+                              className="mt-4 px-3 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-[10px] font-bold text-slate-600 dark:text-slate-400 rounded-lg transition-colors cursor-pointer"
+                            >
+                              Reiniciar Conexão
+                            </button>
+                          </>
+                        )}
                       </div>
                     )}
                   </div>

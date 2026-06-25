@@ -98,6 +98,7 @@ function getFirestoreDb() {
 
 // Memory state matching types.ts
 let connectionStatus: 'disconnected' | 'connecting' | 'connected' = 'disconnected';
+let lastError: string | null = null;
 let currentQR: string | null = null;
 let userInfo: { jid: string; name?: string } | null = null;
 let availableGroups: Group[] = [];
@@ -393,17 +394,28 @@ let connectionTimeout: NodeJS.Timeout | null = null;
 
 async function connectToWhatsApp() {
   if (isConnecting) {
-    console.log('WhatsApp: Connection attempt already in progress. Skipping...');
-    return;
-  }
-
-  // Clear any existing connection timeout
-  if (connectionTimeout) {
-    clearTimeout(connectionTimeout);
-    connectionTimeout = null;
+    const elapsed = Date.now() - lastConnectionStartTime;
+    if (elapsed < 30000) { // Only skip if it's been less than 30s
+      console.log('WhatsApp: Connection attempt already in progress. Skipping...');
+      return;
+    }
+    console.log('WhatsApp: Previous connection attempt stale (>30s). Retrying...');
+    isConnecting = false;
   }
 
   console.log('WhatsApp: Starting connection process...');
+  lastError = null;
+  if (sock) {
+    try {
+      console.log('WhatsApp: Cleaning up previous socket listeners...');
+      sock.ev.removeAllListeners('connection.update');
+      sock.ev.removeAllListeners('creds.update');
+      sock.end(undefined);
+    } catch (e) {
+      console.warn('WhatsApp: Error cleaning up previous socket:', e);
+    }
+    sock = null;
+  }
   isConnecting = true;
   lastConnectionStartTime = Date.now();
   connectionStatus = 'connecting';
@@ -422,11 +434,15 @@ async function connectToWhatsApp() {
   try {
     let version: [number, number, number] = [2, 3000, 1015901307]; // Fallback version
     try {
-      const v: any = await fetchLatestBaileysVersion();
+      // Add timeout to version fetch to prevent hanging
+      const v: any = await Promise.race([
+        fetchLatestBaileysVersion(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
+      ]);
       version = v.version;
       console.log(`WhatsApp: Using Baileys version ${version.join('.')}`);
     } catch (e) {
-      console.warn('WhatsApp: Version fetch failed, using fallback.');
+      console.warn('WhatsApp: Version fetch failed or timed out, using fallback [2, 3000, 1015901307]');
     }
 
     console.log('WhatsApp: Fetching auth state...');
@@ -442,11 +458,12 @@ async function connectToWhatsApp() {
       auth: state,
       logger: logger,
       printQRInTerminal: true,
-      browser: Browsers.ubuntu('Chrome'),
+      browser: ['Ubuntu', 'Chrome', '20.0.04'],
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 60000,
       keepAliveIntervalMs: 30000,
       retryRequestDelayMs: 5000,
+      generateHighQualityQR: true,
     });
 
     // Save auth credentials whenever they update
@@ -634,11 +651,12 @@ async function connectToWhatsApp() {
       clearTimeout(connectionTimeout);
       connectionTimeout = null;
     }
+    lastError = error instanceof Error ? error.message : String(error);
     console.error('WhatsApp: Critical error during connection:', error);
     connectionStatus = 'disconnected';
     isConnecting = false;
     // Retry after failure
-    setTimeout(connectToWhatsApp, 10000);
+    setTimeout(connectToWhatsApp, 15000);
   }
 }
 
@@ -748,14 +766,14 @@ async function startServer() {
     // trigger a reconnection when the frontend polls for state.
     const now = Date.now();
     const connectionDuration = now - lastConnectionStartTime;
-    const isStaleConnecting = isConnecting && connectionDuration > 20000; // 20s stale
+    const isStaleConnecting = isConnecting && connectionDuration > 45000; 
     
     const isStuckConnecting = connectionStatus === 'connecting' && !isConnecting && !sock;
     const noQRFound = connectionStatus === 'disconnected' && !currentQR && !userInfo && !isConnecting;
 
     if (isStuckConnecting || noQRFound || isStaleConnecting) {
       if (isStaleConnecting) {
-        console.warn('WhatsApp: Connection attempt stale (>20s). Force resetting isConnecting...');
+        console.warn('WhatsApp: Connection attempt stale (>45s). Force resetting isConnecting...');
         isConnecting = false;
       }
       console.log(`State requested but connection seems dead or missing. status=${connectionStatus}, hasQR=${!!currentQR}. Triggering reconnect...`);
@@ -766,6 +784,9 @@ async function startServer() {
       status: connectionStatus,
       qr: currentQR,
       userInfo,
+      isConnecting,
+      lastError,
+      lastQRTimestamp,
       masterGroup: config.masterGroup,
       targetGroups: config.targetGroups,
       availableGroups,
