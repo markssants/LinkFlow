@@ -89,7 +89,6 @@ export default function App() {
     includeSenderPrefix: false,
     forwardDelayMs: 5000,
     cloudPersistenceEnabled: true,
-    lastError: undefined,
   });
 
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -298,15 +297,6 @@ export default function App() {
     }
   };
 
-  const handleForceReconnect = async () => {
-    try {
-      await fetch('/api/disconnect', { method: 'POST' });
-      await fetchState(true);
-    } catch (err) {
-      console.error('Erro ao forçar reconexão:', err);
-    }
-  };
-
   // Filter available groups for suggestions (excluding currently configured groups)
   const filteredAvailableForMaster = state.availableGroups.filter(
     g => g.name.toLowerCase().includes(groupSearch.toLowerCase())
@@ -498,31 +488,9 @@ export default function App() {
                       </div>
                     ) : (
                       <div className="w-56 h-56 flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 bg-white dark:bg-slate-800 rounded-xl shadow-inner border border-slate-200 dark:border-slate-700 transition-colors">
-                        {state.lastError ? (
-                           <>
-                             <XCircle className="w-12 h-12 mb-3 text-red-500" />
-                             <span className="text-xs font-bold text-red-500 px-4">Erro na Conexão</span>
-                           </>
-                        ) : (
-                          <>
-                            <QrCode className="w-12 h-12 mb-3 animate-pulse text-emerald-500/80" />
-                            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Gerando código QR...</span>
-                            <span className="text-[10px] text-slate-400 mt-1">Aguarde alguns segundos</span>
-                          </>
-                        )}
-                      </div>
-                    )}
-                    {state.lastError && (
-                      <div className="mt-4 p-2 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900/40 rounded-xl">
-                        <p className="text-[10px] text-red-600 dark:text-red-400 font-medium leading-tight">
-                          {state.lastError}
-                        </p>
-                        <button 
-                          onClick={handleForceReconnect}
-                          className="mt-2 text-[10px] font-bold text-red-700 dark:text-red-300 underline cursor-pointer hover:text-red-800"
-                        >
-                          Tentar Novamente
-                        </button>
+                        <QrCode className="w-12 h-12 mb-3 animate-pulse text-emerald-500/80" />
+                        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Gerando código QR...</span>
+                        <span className="text-[10px] text-slate-400 mt-1">Aguarde alguns segundos</span>
                       </div>
                     )}
                   </div>

@@ -13,14 +13,20 @@ import { getFirestore, doc, getDoc, setDoc, deleteDoc, setLogLevel, collection, 
 setLogLevel('silent');
 
 // Safely import Baileys to handle potential export style differences
-import * as Baileys from '@whiskeysockets/baileys';
-const makeWASocket = (Baileys as any).default || Baileys;
-const useMultiFileAuthState = Baileys.useMultiFileAuthState;
-const DisconnectReason = Baileys.DisconnectReason;
+import makeWASocket, { 
+  useMultiFileAuthState, 
+  DisconnectReason, 
+  fetchLatestBaileysVersion,
+  Browsers
+} from '@whiskeysockets/baileys';
 
 async function useFirestoreAuthState(collectionName: string) {
   console.log('Using local multi-file auth state due to Firestore free tier quota constraints.');
-  return await useMultiFileAuthState('auth_info_baileys');
+  const authPath = path.join(process.cwd(), 'auth_info_baileys');
+  if (!fs.existsSync(authPath)) {
+    fs.mkdirSync(authPath, { recursive: true });
+  }
+  return await useMultiFileAuthState(authPath);
 }
 
 // Initialize silent logger to keep console output clean
@@ -93,7 +99,6 @@ function getFirestoreDb() {
 // Memory state matching types.ts
 let connectionStatus: 'disconnected' | 'connecting' | 'connected' = 'disconnected';
 let currentQR: string | null = null;
-let lastError: string | null = null;
 let userInfo: { jid: string; name?: string } | null = null;
 let availableGroups: Group[] = [];
 
@@ -380,27 +385,33 @@ function injectAffiliateLinks(text: string, affiliateConfig: any): { newText: st
 
 // Global reference of WhatsApp connection
 let sock: any = null;
+let connectionAttempts = 0;
+let lastQRTimestamp = 0;
 
 async function connectToWhatsApp() {
   console.log('WhatsApp: Starting connection process...');
   connectionStatus = 'connecting';
   currentQR = null;
-  lastError = null;
+  connectionAttempts++;
 
   try {
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    console.log(`WhatsApp: Using Baileys version ${version.join('.')}${isLatest ? ' (latest)' : ''}`);
+
     console.log('WhatsApp: Fetching auth state...');
     const { state, saveCreds } = await useFirestoreAuthState('sessions');
 
     console.log('WhatsApp: Initializing Socket...');
     // Create the socket connection
     sock = makeWASocket({
+      version,
       auth: state,
       logger: logger,
       printQRInTerminal: true,
-      browser: ['Ubuntu', 'Chrome', '20.0.04'],
+      browser: Browsers.ubuntu('Chrome'),
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 60000,
-      keepAliveIntervalMs: 10000,
+      keepAliveIntervalMs: 30000,
     });
 
     // Save auth credentials whenever they update
@@ -416,12 +427,11 @@ async function connectToWhatsApp() {
           console.log('WhatsApp: Generating QR Data URL...');
           // Convert the raw QR text into a Base64 Client-readable Data URL
           currentQR = await QRCode.toDataURL(qr);
+          lastQRTimestamp = Date.now();
           connectionStatus = 'disconnected';
-          lastError = null;
           console.log('WhatsApp: QR Code ready for client');
-        } catch (qrErr: any) {
+        } catch (qrErr) {
           console.error('WhatsApp: Failed to generate QR Code data URL:', qrErr);
-          lastError = `Erro ao gerar QR Code: ${qrErr.message || String(qrErr)}`;
         }
       }
 
@@ -434,12 +444,18 @@ async function connectToWhatsApp() {
         currentQR = null;
 
         if (shouldReconnect) {
-          // Re-establish connection
-          setTimeout(connectToWhatsApp, 3000);
+          // Re-establish connection with exponential backoff or simple delay
+          const delay = Math.min(30000, 3000 * connectionAttempts);
+          console.log(`WhatsApp: Scheduling reconnection in ${delay}ms...`);
+          setTimeout(connectToWhatsApp, delay);
         } else {
           // Clean up auth info dir on logouts
+          console.log('WhatsApp: Logged out detected. Clearing session...');
           try {
-            fs.rmSync(path.join(process.cwd(), 'auth_info_baileys'), { recursive: true, force: true });
+            const authPath = path.join(process.cwd(), 'auth_info_baileys');
+            if (fs.existsSync(authPath)) {
+              fs.rmSync(authPath, { recursive: true, force: true });
+            }
           } catch (e) {}
           const db = getFirestoreDb();
           if (db) {
@@ -448,10 +464,12 @@ async function connectToWhatsApp() {
             } catch (e) {}
           }
           console.log('Logged out. Ready for next scan.');
+          connectionAttempts = 0;
         }
       } else if (connection === 'open') {
         connectionStatus = 'connected';
         currentQR = null;
+        connectionAttempts = 0;
 
         const userJid = sock.user?.id || sock.user?.jid || '';
         const userName = sock.user?.name || 'WhatsApp Admin';
@@ -559,10 +577,9 @@ async function connectToWhatsApp() {
         }
       }
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error starting WhatsApp connection:', error);
     connectionStatus = 'disconnected';
-    lastError = `Erro na inicialização: ${error.message || String(error)}`;
   }
 }
 
@@ -654,15 +671,17 @@ async function startServer() {
   app.get('/api/state', (req, res) => {
     // If the server was sleeping (e.g. Cloud Run scale to zero) and connection dropped,
     // trigger a reconnection when the frontend polls for state.
-    if (connectionStatus === 'disconnected' && !currentQR) {
-      console.log('State requested but connection is dead. Triggering reconnect...');
+    const isStuckConnecting = connectionStatus === 'connecting' && connectionAttempts > 0 && !sock;
+    const noQRFound = connectionStatus === 'disconnected' && !currentQR && !userInfo;
+
+    if (isStuckConnecting || noQRFound) {
+      console.log(`State requested but connection seems dead or missing. status=${connectionStatus}, hasQR=${!!currentQR}. Triggering reconnect...`);
       connectToWhatsApp();
     }
 
     res.json({
       status: connectionStatus,
       qr: currentQR,
-      lastError,
       userInfo,
       masterGroup: config.masterGroup,
       targetGroups: config.targetGroups,
