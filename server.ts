@@ -387,16 +387,29 @@ function injectAffiliateLinks(text: string, affiliateConfig: any): { newText: st
 let sock: any = null;
 let connectionAttempts = 0;
 let lastQRTimestamp = 0;
+let isConnecting = false;
 
 async function connectToWhatsApp() {
+  if (isConnecting) {
+    console.log('WhatsApp: Connection attempt already in progress. Skipping...');
+    return;
+  }
+
   console.log('WhatsApp: Starting connection process...');
+  isConnecting = true;
   connectionStatus = 'connecting';
   currentQR = null;
   connectionAttempts++;
 
   try {
-    const { version, isLatest } = await fetchLatestBaileysVersion();
-    console.log(`WhatsApp: Using Baileys version ${version.join('.')}${isLatest ? ' (latest)' : ''}`);
+    let version: [number, number, number] = [2, 3000, 1015901307]; // Fallback version
+    try {
+      const v: any = await fetchLatestBaileysVersion();
+      version = v.version;
+      console.log(`WhatsApp: Using Baileys version ${version.join('.')}`);
+    } catch (e) {
+      console.warn('WhatsApp: Version fetch failed, using fallback.');
+    }
 
     console.log('WhatsApp: Fetching auth state...');
     const { state, saveCreds } = await useFirestoreAuthState('sessions');
@@ -429,6 +442,7 @@ async function connectToWhatsApp() {
           currentQR = await QRCode.toDataURL(qr);
           lastQRTimestamp = Date.now();
           connectionStatus = 'disconnected';
+          isConnecting = false;
           console.log('WhatsApp: QR Code ready for client');
         } catch (qrErr) {
           console.error('WhatsApp: Failed to generate QR Code data URL:', qrErr);
@@ -442,6 +456,8 @@ async function connectToWhatsApp() {
         
         connectionStatus = 'disconnected';
         currentQR = null;
+        sock = null;
+        isConnecting = false;
 
         if (shouldReconnect) {
           // Re-establish connection with exponential backoff or simple delay
@@ -469,6 +485,7 @@ async function connectToWhatsApp() {
       } else if (connection === 'open') {
         connectionStatus = 'connected';
         currentQR = null;
+        isConnecting = false;
         connectionAttempts = 0;
 
         const userJid = sock.user?.id || sock.user?.jid || '';
@@ -578,8 +595,11 @@ async function connectToWhatsApp() {
       }
     });
   } catch (error) {
-    console.error('Error starting WhatsApp connection:', error);
+    console.error('WhatsApp: Critical error during connection:', error);
     connectionStatus = 'disconnected';
+    isConnecting = false;
+    // Retry after failure
+    setTimeout(connectToWhatsApp, 10000);
   }
 }
 
@@ -671,8 +691,8 @@ async function startServer() {
   app.get('/api/state', (req, res) => {
     // If the server was sleeping (e.g. Cloud Run scale to zero) and connection dropped,
     // trigger a reconnection when the frontend polls for state.
-    const isStuckConnecting = connectionStatus === 'connecting' && connectionAttempts > 0 && !sock;
-    const noQRFound = connectionStatus === 'disconnected' && !currentQR && !userInfo;
+    const isStuckConnecting = connectionStatus === 'connecting' && !isConnecting && !sock;
+    const noQRFound = connectionStatus === 'disconnected' && !currentQR && !userInfo && !isConnecting;
 
     if (isStuckConnecting || noQRFound) {
       console.log(`State requested but connection seems dead or missing. status=${connectionStatus}, hasQR=${!!currentQR}. Triggering reconnect...`);
