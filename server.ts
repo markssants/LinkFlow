@@ -379,9 +379,16 @@ function injectAffiliateLinks(text: string, affiliateConfig: any): { newText: st
 
 // Global reference of WhatsApp connection
 let sock: any = null;
+let isConnectingFlag = false;
 
 async function connectToWhatsApp() {
+  if (isConnectingFlag) {
+    console.log('WhatsApp: Connection already in progress, skipping start...');
+    return;
+  }
+  
   console.log('WhatsApp: Starting connection process...');
+  isConnectingFlag = true;
   connectionStatus = 'connecting';
   currentQR = null;
 
@@ -425,6 +432,7 @@ async function connectToWhatsApp() {
         
         connectionStatus = 'disconnected';
         currentQR = null;
+        isConnectingFlag = false; // Reset flag so we can try again
 
         if (shouldReconnect) {
           // Re-establish connection
@@ -445,6 +453,7 @@ async function connectToWhatsApp() {
       } else if (connection === 'open') {
         connectionStatus = 'connected';
         currentQR = null;
+        isConnectingFlag = false; // Reset flag on successful connection
 
         const userJid = sock.user?.id || sock.user?.jid || '';
         const userName = sock.user?.name || 'WhatsApp Admin';
@@ -555,6 +564,7 @@ async function connectToWhatsApp() {
   } catch (error) {
     console.error('Error starting WhatsApp connection:', error);
     connectionStatus = 'disconnected';
+    isConnectingFlag = false; // Reset flag on error
   }
 }
 
@@ -746,6 +756,27 @@ async function startServer() {
     
     saveConfig();
     res.json({ success: true, affiliateConfig: config.affiliateConfig });
+  });
+
+  app.post('/api/whatsapp/reconnect', async (req, res) => {
+    console.log('WhatsApp: Manual reconnect requested by user');
+    
+    // Clear current QR and state
+    currentQR = null;
+    connectionStatus = 'connecting';
+    isConnectingFlag = false; // Force reset flag to allow a fresh start
+    
+    if (sock) {
+      try {
+        sock.end(undefined);
+      } catch (e) {}
+      sock = null;
+    }
+
+    // Restart connection process
+    connectToWhatsApp();
+    
+    res.json({ success: true, message: 'Reconexão iniciada' });
   });
 
   app.post('/api/refresh-groups', async (req, res) => {
