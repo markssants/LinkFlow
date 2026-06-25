@@ -1,6 +1,3 @@
-import dotenv from 'dotenv';
-dotenv.config();
-
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
@@ -62,7 +59,6 @@ function getFirestoreDb() {
     let firebaseConfig: any = null;
 
     if (process.env.FIREBASE_API_KEY && process.env.FIREBASE_PROJECT_ID) {
-      console.log('Firebase: Initializing using Environment Variables (Detected)');
       firebaseConfig = {
         apiKey: process.env.FIREBASE_API_KEY,
         projectId: process.env.FIREBASE_PROJECT_ID,
@@ -71,10 +67,7 @@ function getFirestoreDb() {
     } else {
       const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
       if (fs.existsSync(firebaseConfigPath)) {
-        console.log('Firebase: Initializing using local config file');
         firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf-8'));
-      } else {
-        console.warn('Firebase: No config found! Set FIREBASE_API_KEY and FIREBASE_PROJECT_ID env vars or provide firebase-applet-config.json');
       }
     }
 
@@ -381,19 +374,18 @@ function injectAffiliateLinks(text: string, affiliateConfig: any): { newText: st
 let sock: any = null;
 
 async function connectToWhatsApp() {
-  console.log('WhatsApp: Starting connection process...');
   connectionStatus = 'connecting';
   currentQR = null;
 
   try {
-    console.log('WhatsApp: Fetching auth state...');
     const { state, saveCreds } = await useFirestoreAuthState('sessions');
 
-    console.log('WhatsApp: Initializing Socket...');
     // Create the socket connection
     sock = makeWASocket({
       auth: state,
       logger: logger,
+      printQRInTerminal: false,
+      browser: ['LinkFlow', 'Chrome', '1.0.0'],
     });
 
     // Save auth credentials whenever they update
@@ -402,17 +394,14 @@ async function connectToWhatsApp() {
     // Track connection updates
     sock.ev.on('connection.update', async (update: any) => {
       const { connection, lastDisconnect, qr } = update;
-      console.log('WhatsApp: Connection Update ->', connection || 'pending', qr ? '(QR Received)' : '');
 
       if (qr) {
         try {
-          console.log('WhatsApp: Generating QR Data URL...');
           // Convert the raw QR text into a Base64 Client-readable Data URL
           currentQR = await QRCode.toDataURL(qr);
           connectionStatus = 'disconnected';
-          console.log('WhatsApp: QR Code ready for client');
         } catch (qrErr) {
-          console.error('WhatsApp: Failed to generate QR Code data URL:', qrErr);
+          console.error('Failed to generate QR Code data URL:', qrErr);
         }
       }
 
@@ -620,7 +609,7 @@ async function refreshGroups() {
 
 async function startServer() {
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
+  const PORT = 3000;
 
   // Middleware
   app.use(express.json());
