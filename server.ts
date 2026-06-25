@@ -5,7 +5,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
-import * as QRCode from 'qrcode';
+import QRCode from 'qrcode';
 import pino from 'pino';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, setDoc, deleteDoc, setLogLevel, collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
@@ -13,28 +13,18 @@ import { getFirestore, doc, getDoc, setDoc, deleteDoc, setLogLevel, collection, 
 setLogLevel('silent');
 
 // Safely import Baileys to handle potential export style differences
-import BaileysDefault, { useMultiFileAuthState as useMultiFileAuthStateNamed, DisconnectReason as DisconnectReasonNamed } from '@whiskeysockets/baileys';
-const makeWASocket = (BaileysDefault as any).default || BaileysDefault;
-const useMultiFileAuthState = useMultiFileAuthStateNamed;
-const DisconnectReason = DisconnectReasonNamed;
+import * as Baileys from '@whiskeysockets/baileys';
+const makeWASocket = (Baileys as any).default || Baileys;
+const useMultiFileAuthState = Baileys.useMultiFileAuthState;
+const DisconnectReason = Baileys.DisconnectReason;
 
 async function useFirestoreAuthState(collectionName: string) {
-  try {
-    const authPath = path.join(process.cwd(), 'auth_info_baileys');
-    console.log(`WhatsApp Auth: Initializing local state at ${authPath}`);
-    if (!fs.existsSync(authPath)) {
-      fs.mkdirSync(authPath, { recursive: true });
-      console.log('WhatsApp Auth: Created auth_info_baileys directory');
-    }
-    return await useMultiFileAuthState(authPath);
-  } catch (err) {
-    console.error('WhatsApp Auth: Failed to initialize multi-file auth state:', err);
-    throw err;
-  }
+  console.log('Using local multi-file auth state due to Firestore free tier quota constraints.');
+  return await useMultiFileAuthState('auth_info_baileys');
 }
 
-// Initialize logger - using a standard pino logger but with 'warn' level to avoid too much noise but still see errors
-const logger = pino({ level: 'warn' });
+// Initialize silent logger to keep console output clean
+const logger = pino({ level: 'silent' });
 
 interface Group {
   id: string;
@@ -391,90 +381,80 @@ function injectAffiliateLinks(text: string, affiliateConfig: any): { newText: st
 let sock: any = null;
 
 async function connectToWhatsApp() {
-  if (connectionStatus === 'connecting' && currentQR === null) {
-    console.log('WhatsApp: Connection already in progress. Polling for updates...');
-    return;
-  }
-  
-  if (connectionStatus === 'connected') {
-    console.log('WhatsApp: Already connected, skipping.');
-    return;
-  }
-
-  console.log('WhatsApp: Initializing connection sequence...');
+  console.log('WhatsApp: Starting connection process...');
   connectionStatus = 'connecting';
   currentQR = null;
 
-  // Safety timeout: reset status if stuck in connecting for 1 minute
-  const safetyTimeout = setTimeout(() => {
-    if (connectionStatus === 'connecting' && !currentQR) {
-      console.warn('WhatsApp: Connection sequence timed out (1m). Resetting to disconnected.');
-      connectionStatus = 'disconnected';
-    }
-  }, 60000);
-
   try {
+    console.log('WhatsApp: Fetching auth state...');
     const { state, saveCreds } = await useFirestoreAuthState('sessions');
-    console.log('WhatsApp: Auth state loaded.');
 
+    console.log('WhatsApp: Initializing Socket...');
+    // Create the socket connection
     sock = makeWASocket({
       auth: state,
       logger: logger,
-      printQRInTerminal: true,
+      printQRInTerminal: true, // Habilitar no terminal ajuda no debug do Render
       browser: ['LinkFlow', 'Chrome', '1.0.0'],
-      connectTimeoutMs: 60000,
-      defaultQueryTimeoutMs: 0,
-      keepAliveIntervalMs: 10000,
     });
-    
-    console.log('WhatsApp: Socket instance created.');
 
+    // Save auth credentials whenever they update
     sock.ev.on('creds.update', saveCreds);
 
+    // Track connection updates
     sock.ev.on('connection.update', async (update: any) => {
       const { connection, lastDisconnect, qr } = update;
-      
+      console.log('WhatsApp: Connection Update ->', connection || 'pending', qr ? '(QR Received)' : '');
+
       if (qr) {
-        console.log('WhatsApp: QR Code received from server.');
         try {
+          console.log('WhatsApp: Generating QR Data URL...');
+          // Convert the raw QR text into a Base64 Client-readable Data URL
           currentQR = await QRCode.toDataURL(qr);
-          connectionStatus = 'disconnected'; // Keep as disconnected so UI knows it needs scan
-          console.log(`WhatsApp: QR Code Data URL ready (${currentQR.length} bytes)`);
-          clearTimeout(safetyTimeout);
-        } catch (err) {
-          console.error('WhatsApp: Failed to process QR string:', err);
+          connectionStatus = 'disconnected';
+          console.log('WhatsApp: QR Code ready for client');
+        } catch (qrErr) {
+          console.error('WhatsApp: Failed to generate QR Code data URL:', qrErr);
         }
       }
 
       if (connection === 'close') {
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-        console.log(`WhatsApp: Connection closed (${statusCode}). Should reconnect: ${shouldReconnect}`);
+        console.log(`Connection closed. StatusCode: ${statusCode}. Will reconnect: ${shouldReconnect}`);
         
         connectionStatus = 'disconnected';
         currentQR = null;
-        clearTimeout(safetyTimeout);
 
         if (shouldReconnect) {
-          setTimeout(connectToWhatsApp, 5000);
+          // Re-establish connection
+          setTimeout(connectToWhatsApp, 3000);
         } else {
+          // Clean up auth info dir on logouts
           try {
             fs.rmSync(path.join(process.cwd(), 'auth_info_baileys'), { recursive: true, force: true });
           } catch (e) {}
-          console.log('WhatsApp: Logged out, state cleared.');
+          const db = getFirestoreDb();
+          if (db) {
+            try {
+              deleteDoc(doc(db, 'sessions', 'creds.json')).catch(() => {});
+            } catch (e) {}
+          }
+          console.log('Logged out. Ready for next scan.');
         }
       } else if (connection === 'open') {
-        console.log('WhatsApp: Connection opened successfully!');
         connectionStatus = 'connected';
         currentQR = null;
-        clearTimeout(safetyTimeout);
 
-        userInfo = { 
-          jid: sock.user?.id || sock.user?.jid || '', 
-          name: sock.user?.name || 'WhatsApp Admin' 
-        };
+        const userJid = sock.user?.id || sock.user?.jid || '';
+        const userName = sock.user?.name || 'WhatsApp Admin';
+        userInfo = { jid: userJid, name: userName };
+        console.log(`Connected to WhatsApp successfully as ${userName} (${userJid})`);
 
-        setTimeout(refreshGroups, 2000);
+        // Automatically fetch groups on connection open
+        setTimeout(() => {
+          refreshGroups();
+        }, 3000);
       }
     });
 
@@ -641,7 +621,6 @@ async function refreshGroups() {
 }
 
 async function startServer() {
-  console.log('--- SERVER STARTING ---');
   const app = express();
   const PORT = 3000;
 
@@ -664,15 +643,6 @@ async function startServer() {
   connectToWhatsApp();
 
   // API Endpoints
-  app.get('/api/test-qr', async (req, res) => {
-    try {
-      const testQR = await QRCode.toDataURL('https://google.com');
-      res.json({ success: true, qr: testQR });
-    } catch (e: any) {
-      res.status(500).json({ success: false, error: e.message });
-    }
-  });
-
   app.get('/api/state', (req, res) => {
     // If the server was sleeping (e.g. Cloud Run scale to zero) and connection dropped,
     // trigger a reconnection when the frontend polls for state.
