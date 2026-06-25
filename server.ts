@@ -420,17 +420,16 @@ async function connectToWhatsApp() {
 
       if (connection === 'close') {
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut && statusCode !== 401;
+        
         console.log(`Connection closed. StatusCode: ${statusCode}. Will reconnect: ${shouldReconnect}`);
         
         connectionStatus = 'disconnected';
         currentQR = null;
 
-        if (shouldReconnect) {
-          // Re-establish connection
-          setTimeout(connectToWhatsApp, 3000);
-        } else {
-          // Clean up auth info dir on logouts
+        if (!shouldReconnect) {
+          console.log('Clearing session state due to logout or unauthorized access.');
+          // Clean up auth info dir on logouts or 401 errors
           try {
             fs.rmSync(path.join(process.cwd(), 'auth_info_baileys'), { recursive: true, force: true });
           } catch (e) {}
@@ -440,7 +439,17 @@ async function connectToWhatsApp() {
               deleteDoc(doc(db, 'sessions', 'creds.json')).catch(() => {});
             } catch (e) {}
           }
-          console.log('Logged out. Ready for next scan.');
+          
+          if (statusCode === 401) {
+            console.log('Session unauthorized (401). Retrying with fresh state...');
+            setTimeout(connectToWhatsApp, 3000);
+          } else {
+            console.log('Logged out. Ready for next scan.');
+          }
+        } else {
+          // Re-establish connection for transient errors
+          console.log('Transient error. Attempting to reconnect...');
+          setTimeout(connectToWhatsApp, 3000);
         }
       } else if (connection === 'open') {
         connectionStatus = 'connected';
