@@ -93,6 +93,7 @@ function getFirestoreDb() {
 // Memory state matching types.ts
 let connectionStatus: 'disconnected' | 'connecting' | 'connected' = 'disconnected';
 let currentQR: string | null = null;
+let currentPairingCode: string | null = null;
 let userInfo: { jid: string; name?: string } | null = null;
 let availableGroups: Group[] = [];
 
@@ -273,6 +274,7 @@ async function connectToWhatsApp() {
   isConnecting = true;
   connectionStatus = 'connecting';
   currentQR = null;
+  currentPairingCode = null;
 
   try {
     console.log('WhatsApp: Fetching auth state...');
@@ -322,6 +324,7 @@ async function connectToWhatsApp() {
         connectionStatus = 'connected';
         isConnecting = false;
         currentQR = null;
+        currentPairingCode = null;
 
         const userJid = sock.user?.id || sock.user?.jid || '';
         const userName = sock.user?.name || 'WhatsApp Admin';
@@ -342,6 +345,7 @@ async function connectToWhatsApp() {
         
         connectionStatus = 'disconnected';
         currentQR = null;
+        currentPairingCode = null;
 
         if (shouldReconnect) {
           // Re-establish connection with exponential backoff or simple delay
@@ -558,6 +562,7 @@ async function startServer() {
     res.json({
       status: connectionStatus,
       qr: currentQR,
+      pairingCode: currentPairingCode,
       userInfo,
       masterGroup: config.masterGroup,
       targetGroups: config.targetGroups,
@@ -630,6 +635,28 @@ async function startServer() {
       forwardDelayMs: config.forwardDelayMs,
       cloudPersistenceEnabled: config.cloudPersistenceEnabled
     });
+  });
+
+  app.post('/api/request-pairing-code', async (req, res) => {
+    const { phoneNumber } = req.body;
+    if (!phoneNumber) return res.status(400).json({ error: 'Número de telefone é obrigatório' });
+    
+    console.log(`WhatsApp: Requesting pairing code for ${phoneNumber}`);
+    
+    if (!sock) {
+      await connectToWhatsApp();
+    }
+
+    try {
+      const cleanNumber = phoneNumber.replace(/\D/g, '');
+      const code = await sock.requestPairingCode(cleanNumber);
+      currentPairingCode = code;
+      currentQR = null; // Clear QR if using pairing code
+      res.json({ success: true, code });
+    } catch (err: any) {
+      console.error('WhatsApp: Error requesting pairing code:', err);
+      res.status(500).json({ error: 'Erro ao solicitar código: ' + err.message });
+    }
   });
 
   app.post('/api/refresh-groups', async (req, res) => {

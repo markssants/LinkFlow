@@ -24,6 +24,7 @@ export interface ForwardLog {
 export interface WhatsAppState {
   status: ConnectionStatus;
   qr: string | null;
+  pairingCode?: string | null;
   userInfo: { jid: string; name?: string } | null;
   masterGroup: Group | null;
   targetGroups: Group[];
