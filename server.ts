@@ -13,12 +13,12 @@ import { getFirestore, doc, getDoc, setDoc, deleteDoc, setLogLevel, collection, 
 setLogLevel('silent');
 
 // Safely import Baileys to handle potential export style differences
-import makeWASocket, { 
-  useMultiFileAuthState, 
-  DisconnectReason, 
-  fetchLatestBaileysVersion,
-  Browsers
-} from '@whiskeysockets/baileys';
+import * as Baileys from '@whiskeysockets/baileys';
+const makeWASocket = (Baileys as any).default || Baileys;
+const useMultiFileAuthState = Baileys.useMultiFileAuthState;
+const DisconnectReason = Baileys.DisconnectReason;
+const fetchLatestBaileysVersion = Baileys.fetchLatestBaileysVersion;
+const Browsers = Baileys.Browsers;
 
 async function useFirestoreAuthState(collectionName: string) {
   console.log('Using local multi-file auth state due to Firestore free tier quota constraints.');
@@ -388,6 +388,7 @@ let sock: any = null;
 let connectionAttempts = 0;
 let lastQRTimestamp = 0;
 let isConnecting = false;
+let lastConnectionStartTime = 0;
 let connectionTimeout: NodeJS.Timeout | null = null;
 
 async function connectToWhatsApp() {
@@ -404,6 +405,7 @@ async function connectToWhatsApp() {
 
   console.log('WhatsApp: Starting connection process...');
   isConnecting = true;
+  lastConnectionStartTime = Date.now();
   connectionStatus = 'connecting';
   currentQR = null;
   connectionAttempts++;
@@ -431,13 +433,16 @@ async function connectToWhatsApp() {
     const { state, saveCreds } = await useFirestoreAuthState('sessions');
 
     console.log('WhatsApp: Initializing Socket...');
+    if (typeof makeWASocket !== 'function') {
+      throw new Error('makeWASocket is not a function. Check Baileys imports.');
+    }
     // Create the socket connection
     sock = makeWASocket({
       version,
       auth: state,
       logger: logger,
       printQRInTerminal: true,
-      browser: ['Ubuntu', 'Chrome', '20.0.04'],
+      browser: Browsers.ubuntu('Chrome'),
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 60000,
       keepAliveIntervalMs: 30000,
@@ -722,13 +727,37 @@ async function startServer() {
   connectToWhatsApp();
 
   // API Endpoints
+  app.post('/api/whatsapp/reconnect', (req, res) => {
+    console.log('WhatsApp: Manual reconnect requested via API');
+    isConnecting = false;
+    if (sock) {
+      try {
+        sock.logout().catch(() => {});
+        sock.end(undefined);
+      } catch (e) {}
+    }
+    sock = null;
+    connectionStatus = 'disconnected';
+    currentQR = null;
+    connectToWhatsApp();
+    res.json({ status: 'reconnecting' });
+  });
+
   app.get('/api/state', (req, res) => {
     // If the server was sleeping (e.g. Cloud Run scale to zero) and connection dropped,
     // trigger a reconnection when the frontend polls for state.
+    const now = Date.now();
+    const connectionDuration = now - lastConnectionStartTime;
+    const isStaleConnecting = isConnecting && connectionDuration > 20000; // 20s stale
+    
     const isStuckConnecting = connectionStatus === 'connecting' && !isConnecting && !sock;
     const noQRFound = connectionStatus === 'disconnected' && !currentQR && !userInfo && !isConnecting;
 
-    if (isStuckConnecting || noQRFound) {
+    if (isStuckConnecting || noQRFound || isStaleConnecting) {
+      if (isStaleConnecting) {
+        console.warn('WhatsApp: Connection attempt stale (>20s). Force resetting isConnecting...');
+        isConnecting = false;
+      }
       console.log(`State requested but connection seems dead or missing. status=${connectionStatus}, hasQR=${!!currentQR}. Triggering reconnect...`);
       connectToWhatsApp();
     }

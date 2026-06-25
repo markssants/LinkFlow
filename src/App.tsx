@@ -491,6 +491,13 @@ export default function App() {
                         <QrCode className="w-12 h-12 mb-3 animate-pulse text-emerald-500/80" />
                         <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Gerando código QR...</span>
                         <span className="text-[10px] text-slate-400 mt-1">Aguarde alguns segundos</span>
+                        
+                        <button 
+                          onClick={() => fetch('/api/whatsapp/reconnect', { method: 'POST' }).then(() => fetchState(true))}
+                          className="mt-4 px-3 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-[10px] font-bold text-slate-600 dark:text-slate-400 rounded-lg transition-colors cursor-pointer"
+                        >
+                          Não carregou? Clique aqui para reiniciar
+                        </button>
                       </div>
                     )}
                   </div>
