@@ -265,18 +265,6 @@ export default function App() {
     }
   };
 
-  const handleReconnect = async () => {
-    setIsRefreshing(true);
-    try {
-      await fetch('/api/whatsapp/reconnect', { method: 'POST' });
-      await fetchState(false);
-    } catch (err) {
-      console.error('Erro ao solicitar reconexão:', err);
-    } finally {
-      setIsRefreshing(false);
-    }
-  };
-
   const handleSaveAffiliateConfig = async (config: AffiliateConfig) => {
     try {
       const response = await fetch('/api/config/affiliate', {
@@ -530,18 +518,6 @@ export default function App() {
                     <div className="mt-6 p-3 bg-blue-50 dark:bg-blue-900/30 border border-blue-100 dark:border-blue-800/50 text-blue-800 dark:text-blue-300 text-xs rounded-xl flex items-start space-x-2 transition-colors">
                       <AlertCircle className="w-4 h-4 text-blue-500 dark:text-blue-400 shrink-0 mt-0.5" />
                       <span>Após a leitura, a conexão será estabelecida automaticamente e seus grupos de conversa serão carregados.</span>
-                    </div>
-
-                    <div className="mt-6">
-                      <button
-                        onClick={handleReconnect}
-                        disabled={isRefreshing}
-                        className="w-full flex items-center justify-center space-x-2 px-4 py-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 font-bold rounded-xl transition-all cursor-pointer disabled:opacity-50"
-                      >
-                        <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-                        <span>Gerar Novo QR Code</span>
-                      </button>
-                      <p className="mt-2 text-[10px] text-slate-400 text-center">Use este botão se o QR Code expirar ou não carregar.</p>
                     </div>
                   </div>
                 </div>
