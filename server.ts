@@ -286,7 +286,7 @@ async function connectToWhatsApp() {
       auth: state,
       logger: logger,
       printQRInTerminal: true,
-      browser: ["Ubuntu", "Chrome", "20.0.04"],
+      browser: ["Chrome (Linux)", "Chrome", "110.0.0.0"],
       // Add some stabilization options
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 0,
@@ -337,6 +337,7 @@ async function connectToWhatsApp() {
 
       if (connection === 'close') {
         isConnecting = false;
+        sock = null;
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
         
@@ -456,6 +457,7 @@ async function connectToWhatsApp() {
   } catch (error) {
     console.error('Error starting WhatsApp connection:', error);
     connectionStatus = 'disconnected';
+    isConnecting = false;
   }
 }
 
@@ -637,16 +639,29 @@ async function startServer() {
     console.log(`WhatsApp: Requesting pairing code for ${phoneNumber}`);
     
     // If not connected and not connecting, start connection
+    // Or if we've been waiting too long without a socket
     if (!sock && !isConnecting) {
+      console.log('WhatsApp: No socket and no connection in progress. Starting...');
       await connectToWhatsApp();
+    } else if (!sock && isConnecting) {
+      console.log('WhatsApp: Connection already in progress, waiting for socket...');
     }
 
-    // Robust wait for socket initialization (up to 10 seconds)
+    // Robust wait for socket initialization (up to 15 seconds)
     let attempts = 0;
-    while (!sock && attempts < 20) {
-      console.log(`WhatsApp: Waiting for socket initialization... (attempt ${attempts + 1}/20)`);
+    while (!sock && attempts < 30) {
+      if (attempts % 5 === 0) {
+        console.log(`WhatsApp: Waiting for socket initialization... (attempt ${attempts + 1}/30)`);
+      }
       await new Promise(resolve => setTimeout(resolve, 500));
       attempts++;
+      
+      // If after 5 seconds we still have no socket, maybe force a retry?
+      if (attempts === 10 && !sock) {
+        console.log('WhatsApp: Still no socket after 5s. Forcing reconnect attempt...');
+        isConnecting = false;
+        await connectToWhatsApp();
+      }
     }
 
     if (!sock) {
