@@ -1,3 +1,6 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
@@ -14,16 +17,14 @@ import * as Baileys from '@whiskeysockets/baileys';
 const makeWASocket = (Baileys as any).default || Baileys;
 const useMultiFileAuthState = Baileys.useMultiFileAuthState;
 const DisconnectReason = Baileys.DisconnectReason;
-const Browsers = Baileys.Browsers;
 
 async function useFirestoreAuthState(collectionName: string) {
-  const authDir = path.join(process.cwd(), 'auth_info_baileys');
-  console.log(`Using local multi-file auth state at: ${authDir}`);
-  return await useMultiFileAuthState(authDir);
+  console.log('Using local multi-file auth state due to Firestore free tier quota constraints.');
+  return await useMultiFileAuthState('auth_info_baileys');
 }
 
-// Initialize logger with 'error' level to see important issues
-const logger = pino({ level: 'error' });
+// Initialize silent logger to keep console output clean
+const logger = pino({ level: 'silent' });
 
 interface Group {
   id: string;
@@ -61,6 +62,7 @@ function getFirestoreDb() {
     let firebaseConfig: any = null;
 
     if (process.env.FIREBASE_API_KEY && process.env.FIREBASE_PROJECT_ID) {
+      console.log('Firebase: Initializing using Environment Variables (Detected)');
       firebaseConfig = {
         apiKey: process.env.FIREBASE_API_KEY,
         projectId: process.env.FIREBASE_PROJECT_ID,
@@ -69,7 +71,10 @@ function getFirestoreDb() {
     } else {
       const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
       if (fs.existsSync(firebaseConfigPath)) {
+        console.log('Firebase: Initializing using local config file');
         firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf-8'));
+      } else {
+        console.warn('Firebase: No config found! Set FIREBASE_API_KEY and FIREBASE_PROJECT_ID env vars or provide firebase-applet-config.json');
       }
     }
 
@@ -376,34 +381,20 @@ function injectAffiliateLinks(text: string, affiliateConfig: any): { newText: st
 let sock: any = null;
 
 async function connectToWhatsApp() {
-  console.log('Initiating WhatsApp connection attempt...');
+  console.log('WhatsApp: Starting connection process...');
   connectionStatus = 'connecting';
   currentQR = null;
 
-  // Watchdog to reset connection if stuck in 'connecting' for too long (e.g. 2 minutes)
-  const watchdog = setTimeout(() => {
-    if (connectionStatus === 'connecting' && !currentQR) {
-      console.warn('Connection stuck in connecting state for 2 minutes. Force resetting...');
-      connectionStatus = 'disconnected';
-      if (sock) {
-        try { sock.end(undefined); } catch (e) {}
-      }
-    }
-  }, 120000);
-
   try {
+    console.log('WhatsApp: Fetching auth state...');
     const { state, saveCreds } = await useFirestoreAuthState('sessions');
 
-    // Create the socket connection with more robust configuration
+    console.log('WhatsApp: Initializing Socket...');
+    // Create the socket connection
     sock = makeWASocket({
       auth: state,
       logger: logger,
-      printQRInTerminal: false,
-      browser: Browsers.macOS('Desktop'),
-      connectTimeoutMs: 60000,
-      defaultQueryTimeoutMs: 60000,
-      keepAliveIntervalMs: 30000,
-      generateHighQualityQR: true,
+      printQRInTerminal: true, // Habilitar no terminal ajuda no debug do Render
     });
 
     // Save auth credentials whenever they update
@@ -412,22 +403,21 @@ async function connectToWhatsApp() {
     // Track connection updates
     sock.ev.on('connection.update', async (update: any) => {
       const { connection, lastDisconnect, qr } = update;
+      console.log('WhatsApp: Connection Update ->', connection || 'pending', qr ? '(QR Received)' : '');
 
       if (qr) {
-        clearTimeout(watchdog);
-        console.log('New QR Code received from WhatsApp.');
         try {
+          console.log('WhatsApp: Generating QR Data URL...');
           // Convert the raw QR text into a Base64 Client-readable Data URL
           currentQR = await QRCode.toDataURL(qr);
           connectionStatus = 'disconnected';
-          console.log('QR Code successfully converted to Data URL.');
+          console.log('WhatsApp: QR Code ready for client');
         } catch (qrErr) {
-          console.error('Failed to generate QR Code data URL:', qrErr);
+          console.error('WhatsApp: Failed to generate QR Code data URL:', qrErr);
         }
       }
 
       if (connection === 'close') {
-        clearTimeout(watchdog);
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
         console.log(`Connection closed. StatusCode: ${statusCode}. Will reconnect: ${shouldReconnect}`);
@@ -436,19 +426,12 @@ async function connectToWhatsApp() {
         currentQR = null;
 
         if (shouldReconnect) {
-          // Re-establish connection after a short delay
-          setTimeout(() => {
-            console.log('Attempting to reconnect...');
-            connectToWhatsApp();
-          }, 5000);
+          // Re-establish connection
+          setTimeout(connectToWhatsApp, 3000);
         } else {
           // Clean up auth info dir on logouts
-          console.log('User logged out. Cleaning up session data.');
           try {
-            const authDir = path.join(process.cwd(), 'auth_info_baileys');
-            if (fs.existsSync(authDir)) {
-              fs.rmSync(authDir, { recursive: true, force: true });
-            }
+            fs.rmSync(path.join(process.cwd(), 'auth_info_baileys'), { recursive: true, force: true });
           } catch (e) {}
           const db = getFirestoreDb();
           if (db) {
@@ -456,9 +439,9 @@ async function connectToWhatsApp() {
               deleteDoc(doc(db, 'sessions', 'creds.json')).catch(() => {});
             } catch (e) {}
           }
+          console.log('Logged out. Ready for next scan.');
         }
       } else if (connection === 'open') {
-        clearTimeout(watchdog);
         connectionStatus = 'connected';
         currentQR = null;
 
@@ -638,7 +621,7 @@ async function refreshGroups() {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   // Middleware
   app.use(express.json());
