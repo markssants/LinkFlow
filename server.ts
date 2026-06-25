@@ -5,35 +5,46 @@ import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
-import * as QRCode from 'qrcode';
+import * as QRCodeNamespace from 'qrcode';
+const QRCode = (QRCodeNamespace as any).default || QRCodeNamespace;
 import pino from 'pino';
-import { initializeApp, getApp, getApps } from 'firebase/app';
 import { initializeApp as initializeAdminApp, getApps as getAdminApps, getApp as getAdminApp } from 'firebase-admin/app';
 import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
 
 // Initialize Firebase Admin for token verification
-if (getAdminApps().length === 0) {
-  initializeAdminApp({
-    projectId: process.env.FIREBASE_PROJECT_ID || '(default)'
-  });
+try {
+  if (getAdminApps().length === 0) {
+    const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID;
+    if (projectId) {
+      initializeAdminApp({
+        projectId: projectId
+      });
+      console.log(`Firebase Admin initialized successfully for project: ${projectId}`);
+    } else {
+      initializeAdminApp();
+      console.log('Firebase Admin initialized with default credentials');
+    }
+  }
+} catch (err) {
+  console.error('Critical error: Failed to initialize Firebase Admin at startup:', err);
 }
 
-// Initialize Firebase App and Firestore securely from config file
-let firebaseApp: any = null;
+// Initialize Firebase Admin Firestore securely
 let firestoreDb: any = null;
-let currentDbId: string = '';
 
 function getFirestoreDb() {
   if (firestoreDb) return firestoreDb;
   try {
-    const adminApp = getAdminApps().length > 0 ? getAdminApp() : initializeAdminApp({
-      projectId: process.env.FIREBASE_PROJECT_ID || '(default)'
-    });
+    const adminApp = getAdminApps().length > 0 ? getAdminApp() : null;
+    if (!adminApp) {
+      console.warn('getFirestoreDb: No Firebase Admin App initialized');
+      return null;
+    }
     
-    const dbId = process.env.FIREBASE_DATABASE_ID || '(default)';
+    const dbId = process.env.FIREBASE_DATABASE_ID || process.env.VITE_FIREBASE_DATABASE_ID || '(default)';
     firestoreDb = getAdminFirestore(adminApp, dbId === '(default)' ? undefined : dbId);
-    console.log('Firebase Admin Firestore initialized successfully for database:', dbId);
+    console.log('Firebase Admin Firestore initialized successfully');
   } catch (error) {
     console.error('Failed to initialize Firebase Admin Firestore in server.ts:', error);
   }
@@ -402,9 +413,7 @@ function injectAffiliateLinks(text: string, affiliateConfig: any): { newText: st
   return { newText, isModified };
 }
 
-// Global reference of WhatsApp connection
-let sock: any = null;
-
+// Multi-user session management
 async function connectToWhatsApp(uid: string) {
   const context = userSessions.get(uid);
   if (!context) return;
@@ -701,7 +710,7 @@ async function authMiddleware(req: Request, res: Response, next: NextFunction) {
 async function startServer() {
   console.log('--- SERVER STARTING ---');
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   // Middleware
   app.use(express.json());
