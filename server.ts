@@ -93,6 +93,7 @@ function getFirestoreDb() {
 // Memory state matching types.ts
 let connectionStatus: 'disconnected' | 'connecting' | 'connected' = 'disconnected';
 let currentQR: string | null = null;
+let lastError: string | null = null;
 let userInfo: { jid: string; name?: string } | null = null;
 let availableGroups: Group[] = [];
 
@@ -384,6 +385,7 @@ async function connectToWhatsApp() {
   console.log('WhatsApp: Starting connection process...');
   connectionStatus = 'connecting';
   currentQR = null;
+  lastError = null;
 
   try {
     console.log('WhatsApp: Fetching auth state...');
@@ -394,8 +396,11 @@ async function connectToWhatsApp() {
     sock = makeWASocket({
       auth: state,
       logger: logger,
-      printQRInTerminal: true, // Habilitar no terminal ajuda no debug do Render
-      browser: ['LinkFlow', 'Chrome', '1.0.0'],
+      printQRInTerminal: true,
+      browser: ['Ubuntu', 'Chrome', '20.0.04'],
+      connectTimeoutMs: 60000,
+      defaultQueryTimeoutMs: 60000,
+      keepAliveIntervalMs: 10000,
     });
 
     // Save auth credentials whenever they update
@@ -412,24 +417,27 @@ async function connectToWhatsApp() {
           // Convert the raw QR text into a Base64 Client-readable Data URL
           currentQR = await QRCode.toDataURL(qr);
           connectionStatus = 'disconnected';
+          lastError = null;
           console.log('WhatsApp: QR Code ready for client');
-        } catch (qrErr) {
+        } catch (qrErr: any) {
           console.error('WhatsApp: Failed to generate QR Code data URL:', qrErr);
+          lastError = `Erro ao gerar QR Code: ${qrErr.message || String(qrErr)}`;
         }
       }
 
       if (connection === 'close') {
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut && statusCode !== 401;
-        
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
         console.log(`Connection closed. StatusCode: ${statusCode}. Will reconnect: ${shouldReconnect}`);
         
         connectionStatus = 'disconnected';
         currentQR = null;
 
-        if (!shouldReconnect) {
-          console.log('Clearing session state due to logout or unauthorized access.');
-          // Clean up auth info dir on logouts or 401 errors
+        if (shouldReconnect) {
+          // Re-establish connection
+          setTimeout(connectToWhatsApp, 3000);
+        } else {
+          // Clean up auth info dir on logouts
           try {
             fs.rmSync(path.join(process.cwd(), 'auth_info_baileys'), { recursive: true, force: true });
           } catch (e) {}
@@ -439,17 +447,7 @@ async function connectToWhatsApp() {
               deleteDoc(doc(db, 'sessions', 'creds.json')).catch(() => {});
             } catch (e) {}
           }
-          
-          if (statusCode === 401) {
-            console.log('Session unauthorized (401). Retrying with fresh state...');
-            setTimeout(connectToWhatsApp, 3000);
-          } else {
-            console.log('Logged out. Ready for next scan.');
-          }
-        } else {
-          // Re-establish connection for transient errors
-          console.log('Transient error. Attempting to reconnect...');
-          setTimeout(connectToWhatsApp, 3000);
+          console.log('Logged out. Ready for next scan.');
         }
       } else if (connection === 'open') {
         connectionStatus = 'connected';
@@ -561,9 +559,10 @@ async function connectToWhatsApp() {
         }
       }
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error starting WhatsApp connection:', error);
     connectionStatus = 'disconnected';
+    lastError = `Erro na inicialização: ${error.message || String(error)}`;
   }
 }
 
@@ -663,6 +662,7 @@ async function startServer() {
     res.json({
       status: connectionStatus,
       qr: currentQR,
+      lastError,
       userInfo,
       masterGroup: config.masterGroup,
       targetGroups: config.targetGroups,

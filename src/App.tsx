@@ -89,6 +89,7 @@ export default function App() {
     includeSenderPrefix: false,
     forwardDelayMs: 5000,
     cloudPersistenceEnabled: true,
+    lastError: undefined,
   });
 
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -297,6 +298,15 @@ export default function App() {
     }
   };
 
+  const handleForceReconnect = async () => {
+    try {
+      await fetch('/api/disconnect', { method: 'POST' });
+      await fetchState(true);
+    } catch (err) {
+      console.error('Erro ao forçar reconexão:', err);
+    }
+  };
+
   // Filter available groups for suggestions (excluding currently configured groups)
   const filteredAvailableForMaster = state.availableGroups.filter(
     g => g.name.toLowerCase().includes(groupSearch.toLowerCase())
@@ -474,34 +484,47 @@ export default function App() {
 
                 <div className="flex flex-col md:flex-row items-center justify-center gap-10">
                   {/* QR Image Holder */}
-                  <div className="flex flex-col items-center gap-4">
-                    <div className="relative p-6 bg-slate-50 dark:bg-slate-900 border-2 border-slate-100 dark:border-slate-700 rounded-3xl shrink-0 transition-colors">
-                      {state.qr ? (
-                        <div className="relative">
-                          <img 
-                            id="qr-image"
-                            src={state.qr} 
-                            alt="WhatsApp QR Code" 
-                            referrerPolicy="no-referrer"
-                            className="w-56 h-56 rounded-xl relative z-1 gap-2" 
-                          />
-                          <div className="absolute inset-0 border border-dashed border-emerald-400 rounded-xl animate-pulse pointer-events-none" />
-                        </div>
-                      ) : (
-                        <div className="w-56 h-56 flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 bg-white dark:bg-slate-800 rounded-xl shadow-inner border border-slate-200 dark:border-slate-700 transition-colors">
-                          <QrCode className="w-12 h-12 mb-3 animate-pulse text-emerald-500/80" />
-                          <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Gerando código QR...</span>
-                          <span className="text-[10px] text-slate-400 mt-1">Aguarde alguns segundos</span>
-                        </div>
-                      )}
-                    </div>
-                    
-                    <button
-                      onClick={() => setShowDisconnectConfirm(true)}
-                      className="text-[10px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 underline underline-offset-2 cursor-pointer transition-colors"
-                    >
-                      Problemas com o QR? Limpar sessão e tentar novamente
-                    </button>
+                  <div className="relative p-6 bg-slate-50 dark:bg-slate-900 border-2 border-slate-100 dark:border-slate-700 rounded-3xl shrink-0 transition-colors">
+                    {state.qr ? (
+                      <div className="relative">
+                        <img 
+                          id="qr-image"
+                          src={state.qr} 
+                          alt="WhatsApp QR Code" 
+                          referrerPolicy="no-referrer"
+                          className="w-56 h-56 rounded-xl relative z-1 gap-2" 
+                        />
+                        <div className="absolute inset-0 border border-dashed border-emerald-400 rounded-xl animate-pulse pointer-events-none" />
+                      </div>
+                    ) : (
+                      <div className="w-56 h-56 flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 bg-white dark:bg-slate-800 rounded-xl shadow-inner border border-slate-200 dark:border-slate-700 transition-colors">
+                        {state.lastError ? (
+                           <>
+                             <XCircle className="w-12 h-12 mb-3 text-red-500" />
+                             <span className="text-xs font-bold text-red-500 px-4">Erro na Conexão</span>
+                           </>
+                        ) : (
+                          <>
+                            <QrCode className="w-12 h-12 mb-3 animate-pulse text-emerald-500/80" />
+                            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Gerando código QR...</span>
+                            <span className="text-[10px] text-slate-400 mt-1">Aguarde alguns segundos</span>
+                          </>
+                        )}
+                      </div>
+                    )}
+                    {state.lastError && (
+                      <div className="mt-4 p-2 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900/40 rounded-xl">
+                        <p className="text-[10px] text-red-600 dark:text-red-400 font-medium leading-tight">
+                          {state.lastError}
+                        </p>
+                        <button 
+                          onClick={handleForceReconnect}
+                          className="mt-2 text-[10px] font-bold text-red-700 dark:text-red-300 underline cursor-pointer hover:text-red-800"
+                        >
+                          Tentar Novamente
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {/* QR Setup Steps */}

@@ -56,4 +56,5 @@ export interface WhatsAppState {
   forwardDelayMs: number;
   cloudPersistenceEnabled: boolean;
   affiliateConfig?: AffiliateConfig;
+  lastError?: string;
 }
