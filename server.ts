@@ -388,6 +388,7 @@ let sock: any = null;
 let connectionAttempts = 0;
 let lastQRTimestamp = 0;
 let isConnecting = false;
+let connectionTimeout: NodeJS.Timeout | null = null;
 
 async function connectToWhatsApp() {
   if (isConnecting) {
@@ -395,11 +396,26 @@ async function connectToWhatsApp() {
     return;
   }
 
+  // Clear any existing connection timeout
+  if (connectionTimeout) {
+    clearTimeout(connectionTimeout);
+    connectionTimeout = null;
+  }
+
   console.log('WhatsApp: Starting connection process...');
   isConnecting = true;
   connectionStatus = 'connecting';
   currentQR = null;
   connectionAttempts++;
+
+  // Safety timeout to reset isConnecting if it gets stuck
+  connectionTimeout = setTimeout(() => {
+    if (isConnecting) {
+      console.warn('WhatsApp: Connection attempt timed out after 45s. Resetting state...');
+      isConnecting = false;
+      connectionStatus = 'disconnected';
+    }
+  }, 45000);
 
   try {
     let version: [number, number, number] = [2, 3000, 1015901307]; // Fallback version
@@ -421,10 +437,11 @@ async function connectToWhatsApp() {
       auth: state,
       logger: logger,
       printQRInTerminal: true,
-      browser: Browsers.ubuntu('Chrome'),
+      browser: ['Ubuntu', 'Chrome', '20.0.04'],
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 60000,
       keepAliveIntervalMs: 30000,
+      retryRequestDelayMs: 5000,
     });
 
     // Save auth credentials whenever they update
@@ -436,20 +453,29 @@ async function connectToWhatsApp() {
       console.log('WhatsApp: Connection Update ->', connection || 'pending', qr ? '(QR Received)' : '');
 
       if (qr) {
+        if (connectionTimeout) {
+          clearTimeout(connectionTimeout);
+          connectionTimeout = null;
+        }
         try {
-          console.log('WhatsApp: Generating QR Data URL...');
+          console.log('WhatsApp: QR Text received, length:', qr.length);
           // Convert the raw QR text into a Base64 Client-readable Data URL
           currentQR = await QRCode.toDataURL(qr);
           lastQRTimestamp = Date.now();
           connectionStatus = 'disconnected';
           isConnecting = false;
-          console.log('WhatsApp: QR Code ready for client');
+          console.log('WhatsApp: QR Code Data URL successfully generated');
         } catch (qrErr) {
           console.error('WhatsApp: Failed to generate QR Code data URL:', qrErr);
+          isConnecting = false;
         }
       }
 
       if (connection === 'close') {
+        if (connectionTimeout) {
+          clearTimeout(connectionTimeout);
+          connectionTimeout = null;
+        }
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
         console.log(`Connection closed. StatusCode: ${statusCode}. Will reconnect: ${shouldReconnect}`);
@@ -483,6 +509,10 @@ async function connectToWhatsApp() {
           connectionAttempts = 0;
         }
       } else if (connection === 'open') {
+        if (connectionTimeout) {
+          clearTimeout(connectionTimeout);
+          connectionTimeout = null;
+        }
         connectionStatus = 'connected';
         currentQR = null;
         isConnecting = false;
@@ -595,6 +625,10 @@ async function connectToWhatsApp() {
       }
     });
   } catch (error) {
+    if (connectionTimeout) {
+      clearTimeout(connectionTimeout);
+      connectionTimeout = null;
+    }
     console.error('WhatsApp: Critical error during connection:', error);
     connectionStatus = 'disconnected';
     isConnecting = false;
