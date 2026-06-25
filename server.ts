@@ -18,8 +18,7 @@ const makeWASocket = (Baileys as any).default || Baileys;
 const useMultiFileAuthState = Baileys.useMultiFileAuthState;
 const DisconnectReason = Baileys.DisconnectReason;
 
-async function useFirestoreAuthState(collectionName: string) {
-  console.log('Using local multi-file auth state due to Firestore free tier quota constraints.');
+async function useLocalAuthState() {
   return await useMultiFileAuthState('auth_info_baileys');
 }
 
@@ -278,7 +277,7 @@ async function connectToWhatsApp() {
 
   try {
     console.log('WhatsApp: Fetching auth state...');
-    const { state, saveCreds } = await useFirestoreAuthState('sessions');
+    const { state, saveCreds } = await useLocalAuthState();
 
     console.log('WhatsApp: Initializing Socket...');
     
@@ -287,7 +286,7 @@ async function connectToWhatsApp() {
       auth: state,
       logger: logger,
       printQRInTerminal: true,
-      browser: ['LinkFlow', 'Chrome', '1.0.0'],
+      browser: ["Ubuntu", "Chrome", "20.0.04"],
       // Add some stabilization options
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 0,
@@ -352,16 +351,10 @@ async function connectToWhatsApp() {
           const delay = statusCode === DisconnectReason.restartRequired ? 1000 : 5000;
           setTimeout(connectToWhatsApp, delay);
         } else {
-          // Clean up auth info dir on logouts
+          // Clean up local auth info on logouts
           try {
             fs.rmSync(path.join(process.cwd(), 'auth_info_baileys'), { recursive: true, force: true });
           } catch (e) {}
-          const db = getFirestoreDb();
-          if (db) {
-            try {
-              deleteDoc(doc(db, 'sessions', 'creds.json')).catch(() => {});
-            } catch (e) {}
-          }
           userInfo = null;
           console.log('WhatsApp: Logged out successfully.');
         }
@@ -660,11 +653,18 @@ async function startServer() {
       return res.status(500).json({ error: 'Servidor WhatsApp não inicializou a tempo. Tente novamente em instantes.' });
     }
 
+    // If already registered, pairing code won't work
+    if (sock.authState?.creds?.registered) {
+      return res.status(400).json({ error: 'WhatsApp já está conectado. Desconecte primeiro para usar um novo número.' });
+    }
+
     try {
       const cleanNumber = phoneNumber.replace(/\D/g, '');
+      console.log(`WhatsApp: Calling requestPairingCode for ${cleanNumber}`);
       const code = await sock.requestPairingCode(cleanNumber);
       currentPairingCode = code;
-      currentQR = null; // Clear QR if using pairing code
+      currentQR = null; 
+      console.log(`WhatsApp: Pairing code generated: ${code}`);
       res.json({ success: true, code });
     } catch (err: any) {
       console.error('WhatsApp: Error requesting pairing code:', err);
@@ -701,12 +701,6 @@ async function startServer() {
       fs.rmSync(path.join(process.cwd(), 'auth_info_baileys'), { recursive: true, force: true });
     } catch (err) {
       console.error('Error deleting auth_info directory:', err);
-    }
-    const db = getFirestoreDb();
-    if (db) {
-      try {
-        await deleteDoc(doc(db, 'sessions', 'creds.json'));
-      } catch (e) {}
     }
 
     // Create fresh connection
