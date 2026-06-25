@@ -1,22 +1,22 @@
-import dotenv from 'dotenv';
-dotenv.config();
-
+import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
-import QRCode from 'qrcode';
+import pkgQRCode from 'qrcode';
+const QRCode = (pkgQRCode as any).default || pkgQRCode;
 import pino from 'pino';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, setDoc, deleteDoc, setLogLevel, collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
 
 setLogLevel('silent');
 
-// Safely import Baileys to handle potential export style differences
-import * as Baileys from '@whiskeysockets/baileys';
+// Safely import Baileys for full ESM compatibility
+import * as BaileysPkg from '@whiskeysockets/baileys';
+const Baileys = (BaileysPkg as any).default || BaileysPkg;
 const makeWASocket = (Baileys as any).default || Baileys;
-const useMultiFileAuthState = Baileys.useMultiFileAuthState;
-const DisconnectReason = Baileys.DisconnectReason;
+const useMultiFileAuthState = Baileys.useMultiFileAuthState || (BaileysPkg as any).useMultiFileAuthState;
+const DisconnectReason = Baileys.DisconnectReason || (BaileysPkg as any).DisconnectReason;
 
 async function useFirestoreAuthState(collectionName: string) {
   console.log('Using local multi-file auth state due to Firestore free tier quota constraints.');
