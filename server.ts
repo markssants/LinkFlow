@@ -394,7 +394,6 @@ async function connectToWhatsApp() {
     sock = makeWASocket({
       auth: state,
       logger: logger,
-      printQRInTerminal: true, // Habilitar no terminal ajuda no debug do Render
     });
 
     // Save auth credentials whenever they update
