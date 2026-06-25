@@ -261,9 +261,16 @@ function saveConfig() {
 
 // Global reference of WhatsApp connection
 let sock: any = null;
+let isConnecting = false;
 
 async function connectToWhatsApp() {
+  if (isConnecting) {
+    console.log('WhatsApp: Connection already in progress, skipping...');
+    return;
+  }
+  
   console.log('WhatsApp: Starting connection process...');
+  isConnecting = true;
   connectionStatus = 'connecting';
   currentQR = null;
 
@@ -272,12 +279,19 @@ async function connectToWhatsApp() {
     const { state, saveCreds } = await useFirestoreAuthState('sessions');
 
     console.log('WhatsApp: Initializing Socket...');
+    
     // Create the socket connection
     sock = makeWASocket({
       auth: state,
       logger: logger,
-      printQRInTerminal: true, // Habilitar no terminal ajuda no debug do Render
+      printQRInTerminal: true,
       browser: ['LinkFlow', 'Chrome', '1.0.0'],
+      // Add some stabilization options
+      connectTimeoutMs: 60000,
+      defaultQueryTimeoutMs: 0,
+      keepAliveIntervalMs: 10000,
+      generateHighQualityLinkPreview: false,
+      syncFullHistory: false,
     });
 
     // Save auth credentials whenever they update
@@ -286,12 +300,10 @@ async function connectToWhatsApp() {
     // Track connection updates
     sock.ev.on('connection.update', async (update: any) => {
       const { connection, lastDisconnect, qr } = update;
-      console.log('WhatsApp: Connection Update ->', connection || 'pending', qr ? '(QR Received)' : '');
-
+      
       if (qr) {
         try {
           console.log('WhatsApp: Generating QR Data URL...');
-          // Convert the raw QR text into a Base64 Client-readable Data URL
           currentQR = await QRCode.toDataURL(qr);
           connectionStatus = 'disconnected';
           console.log('WhatsApp: QR Code ready for client');
@@ -300,17 +312,41 @@ async function connectToWhatsApp() {
         }
       }
 
+      if (connection === 'connecting') {
+        connectionStatus = 'connecting';
+        isConnecting = true;
+      }
+
+      if (connection === 'open') {
+        console.log('WhatsApp: Connection opened successfully');
+        connectionStatus = 'connected';
+        isConnecting = false;
+        currentQR = null;
+
+        const userJid = sock.user?.id || sock.user?.jid || '';
+        const userName = sock.user?.name || 'WhatsApp Admin';
+        userInfo = { jid: userJid, name: userName };
+
+        // Automatically fetch groups on connection open
+        setTimeout(() => {
+          refreshGroups();
+        }, 3000);
+      }
+
       if (connection === 'close') {
+        isConnecting = false;
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-        console.log(`Connection closed. StatusCode: ${statusCode}. Will reconnect: ${shouldReconnect}`);
+        
+        console.log(`WhatsApp: Connection closed. StatusCode: ${statusCode}. Reconnecting: ${shouldReconnect}`);
         
         connectionStatus = 'disconnected';
         currentQR = null;
 
         if (shouldReconnect) {
-          // Re-establish connection
-          setTimeout(connectToWhatsApp, 3000);
+          // Re-establish connection with exponential backoff or simple delay
+          const delay = statusCode === DisconnectReason.restartRequired ? 1000 : 5000;
+          setTimeout(connectToWhatsApp, delay);
         } else {
           // Clean up auth info dir on logouts
           try {
@@ -322,21 +358,9 @@ async function connectToWhatsApp() {
               deleteDoc(doc(db, 'sessions', 'creds.json')).catch(() => {});
             } catch (e) {}
           }
-          console.log('Logged out. Ready for next scan.');
+          userInfo = null;
+          console.log('WhatsApp: Logged out successfully.');
         }
-      } else if (connection === 'open') {
-        connectionStatus = 'connected';
-        currentQR = null;
-
-        const userJid = sock.user?.id || sock.user?.jid || '';
-        const userName = sock.user?.name || 'WhatsApp Admin';
-        userInfo = { jid: userJid, name: userName };
-        console.log(`Connected to WhatsApp successfully as ${userName} (${userJid})`);
-
-        // Automatically fetch groups on connection open
-        setTimeout(() => {
-          refreshGroups();
-        }, 3000);
       }
     });
 
